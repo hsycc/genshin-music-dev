@@ -34,7 +34,8 @@ node test-sheets/textSheetToComposed.js "test-sheets/你你234你你123你.txt"
 把任意来源的曲谱读成一条**可直接驱动键盘的事件流**。这是 `normalizeSheet.js`。
 
 ```bash
-node test-sheets/normalizeSheet.js <file> [--app Sky|Genshin] [--json] [--pretty]
+node test-sheets/normalizeSheet.js <file> [--app Sky|Genshin]
+                                   [--gate <ms>] [--gate-guard <ms>] [--json] [--pretty]
 ```
 
 ### 支持的输入（自动识别，不看扩展名）
@@ -61,7 +62,9 @@ node test-sheets/normalizeSheet.js <file> [--app Sky|Genshin] [--json] [--pretty
                       "visible", "reverbOverride" }],
     "durationMs", "noteCount", "eventCount", "columnCount",
     "midiRange": [lo, hi],
-    "usedLayers": [0, 1, 2]                     // 实际用到的层，可预分配音色
+    "usedLayers": [0, 1, 2],                    // 实际用到的层，可预分配音色
+    "mergedCount",                              // 因同时刻同键而合并掉的音符数
+    "gate": null                                // 传 --gate 后为 { ms, guardMs, clampedCount, zeroCount }
   },
   "sections": [{ "column", "time" }],           // 小节 / 段落标记 → 时刻
   "events": [{
@@ -75,7 +78,9 @@ node test-sheets/normalizeSheet.js <file> [--app Sky|Genshin] [--json] [--pretty
       "midi",        // 绝对音高，已含调性移调
       "layer",       // 原始层位掩码（hex 串，最高 52 位）
       "layers": [],  // 展开的层号，对应 meta.instruments 下标
-      "slot"         // smc 专有：时值内的行位（0 上 / 1 中 / 2 下）
+      "slot",        // smc 专有：时值内的行位（0 上 / 1 中 / 2 下）
+      "holdMs",      // 仅 --gate：按下时长
+      "gateClamped"  // 仅 --gate：该音符被同键的下次触发截短了
     }]
   }],
   "warnings": []
@@ -84,6 +89,67 @@ node test-sheets/normalizeSheet.js <file> [--app Sky|Genshin] [--json] [--pretty
 
 关键设计：**按同时发声分组**。一个 `event` 就是"这一刻要按下的所有键"，
 和弦不用在消费端二次聚合，LED 一次点亮一组。
+
+同一事件内**同一个 `index` 会被合并**（层掩码按位或），因为一个物理键不可能
+同时按两次。曲库里实测有 149938 个这样的重复音符（集中在 3 首曲子里）。
+
+### `--gate`：推导按键时长
+
+曲谱格式只有 note-on 没有 note-off（见下方「音符时长」），所以 `holdMs`
+**不是从曲谱里提取的，是固件侧策略参数的推导结果** —— 只在显式传 `--gate` 时才出现，
+不传就完全没有这个字段，避免被误当成原始数据。
+
+```
+holdMs = min(gate, 同一 index 的下次触发时刻 - 当前时刻 - guard)
+```
+
+截断按 `index` 而不是 `layer`：同一个物理键被两个层同时触发也只是一个键，
+释放必须早于下一次按下，否则电磁铁 / 按键状态机会错乱。`--gate-guard` 是预留的
+释放余量，默认 1ms。被截短的音符带 `gateClamped: true`，方便定位哪里门限没吃满。
+
+全曲库的截断率：
+
+| gate | 被截断 | 占比 |
+|---|---|---|
+| 50ms | 91,476 | 0.87% |
+| 80ms | 135,220 | 1.29% |
+| 120ms | 387,953 | 3.69% |
+| 200ms | 1,055,221 | 10.03% |
+
+**这个表本身就是一次校验。** 没做同键合并之前，80ms 的截断率是 2.56%——
+那 149938 个重复音符被当成「同键 0ms 重触发」全部截断，是假象。合并后掉到 1.29%。
+
+另有 83 个音符即使 guard 只有 1ms 也归零，全部来自 `Beat that (Gabe).txt`：
+同一个键在 7808 / 7809 / 7810 / 7811ms 连续触发。这是录制时的抖动，
+物理键盘按不出来，固件应当直接丢弃而不是尝试执行。
+
+### 音符时长：为什么源数据里没有
+
+四种格式**全部只存 note-on，没有 note-off**。游戏乐器是 one-shot 采样，
+按一下播完固定衰减，「按住」这个概念本来就不存在。
+
+想从「到下一个音符的间隔」倒推时长会撞上一个无解的歧义：同一个键在 0ms 和
+500ms 各触发一次，可以是「连按两次短音」，也可以是「按住 500ms 再按一次」——
+数据里这两者完全一样。推出来的 duration 是编造的，不是提取的。
+
+上游自己也承认这点，导 MIDI 时直接写死占位符：
+
+```ts
+// src/lib/Songs/RecordedSong.ts:295
+track.addNote({ time: note.time / 1000, duration: 1, midi: note.toMidi() || 0 })
+```
+
+所以归一化器默认不产出音符时长，`--gate` 是让这个推导**变显式**，而不是替你猜。
+
+### `durationMs` 的一处不对称
+
+| 来源 | 取值 |
+|---|---|
+| composed / smc / abc | `max(最后音符时刻, 最后一列时刻)` —— 含尾部空列 |
+| recorded | 最后一个音符的时刻 —— 没有列的概念，尾部留白无从得知 |
+
+同一首曲子走两条路径，`durationMs` 可能差几百毫秒。下面交叉验证的三条路径
+都没暴露这个（都是网格系），不是它验证过了。
 
 ### 交叉验证
 
@@ -103,10 +169,9 @@ node test-sheets/normalizeSheet.js <file> [--app Sky|Genshin] [--json] [--pretty
 
 ```
 成功 16090 / 失败 11
-事件 6,212,968   音符 10,672,587   段落标记 3,125
+事件 6,212,968   音符 10,522,649（合并同键重复 149,938 后）   段落标记 3,125
 格式分布  composed v3: 12560   recorded v2: 3530
 索引上限 14   MIDI 60–95   最长 layer 掩码 0x1000000000000（52 bit）
-警告 0
 ```
 
 11 个失败全部是真的不支持，不是解析缺陷：`vsrg` 2、缺 `type` 字段 4、
