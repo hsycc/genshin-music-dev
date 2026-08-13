@@ -255,8 +255,7 @@
    外推未确认：R=2 T=7；数字 2–7 = 中音区带一点                        */
 const NOTE_MAP = (() => {
   const m = {};
-  ['D','R','M','F','S','L','T'].forEach((c, i) => m[c] = { digit: String(i + 1), dots: 0 });
-  m['B'] = m['T'];                                   // si 的另一种写法
+  ['D','R','M','F','S','L','X'].forEach((c, i) => m[c] = { digit: String(i + 1), dots: 0 });
   for (let d = 1; d <= 7; d++) m[String(d)] = { digit: String(d), dots: 1 };
   m['8'] = { digit: '1', dots: 2 };
   return m;
@@ -264,8 +263,8 @@ const NOTE_MAP = (() => {
 const REST = new Set(['0', ' ', '-', '_']);
 
 /* 八度移位记号的处理。
-   已确认：编曲时就已经完成移调 —— 谱面上的字符就是**实际要按的键**，
-   `(8vb)` 只是记录「本谱比原曲低八度」这一事实，导出时不再重复移位。
+   作者已确认：(8vb) 仅决定琴谱编辑器里播放演示时是否降八度，
+   不影响导出后的实际音高。故导出一律不移位。
    若换成需要按记号再移位的谱源，置 true 即可。                        */
 const APPLY_OCTAVE_MARK = false;
 
@@ -398,7 +397,7 @@ function renderPage(sheet, pageIdx) {
 /* ---------- MIDI 导出（最小 SMF format 0） ---------- */
 function toMidi(sheet) {
   const DIV = 480;                              // ticks / 四分音符
-  const TICKS_PER_BEAT = DIV / 2;               // 一个时值 = 八分音符
+  const TICKS_PER_BEAT = DIV / 2;               // 一个时值 = 八分音符（与作者工具的 PPQ/2 一致）
   const bpm = Math.max(1, parseInt(sheet.speed, 10) || 120);
 
   /* 音高基准 —— 与本仓 src/Config.ts 的 NOTE_MAP_TO_MIDI 对齐：
