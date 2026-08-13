@@ -195,6 +195,7 @@
     <div class="bar-right">
       <label class="radio"><input type="radio" name="fmt" value="pdf" checked> PDF</label>
       <label class="radio"><input type="radio" name="fmt" value="mid"> MID</label>
+      <label class="radio"><input type="radio" name="fmt" value="txt"> TXT</label>
       <button class="green" id="expOne">单个导出</button>
       <button id="expAll">全部导出</button>
     </div>
@@ -460,6 +461,34 @@ function toMidi(sheet) {
   return new Uint8Array(bytes);
 }
 
+/* ---------- Sky Studio ABC txt 导出（照 reference/琴谱格式转换工具.html 的 convertToTxt） ---------- */
+const ABC_LABELS = ['A', 'B', 'C'].flatMap(r => [1, 2, 3, 4, 5].map(c => `${r}${c}`));
+const KEY_NUM = {C:0, Db:1, D:2, Eb:3, E:4, F:5, Gb:6, G:7, Ab:8, A:9, Bb:10, B:11};
+
+function toSkyStudioTxt(sheet) {
+  const tempo = Math.max(1, parseInt(sheet.speed, 10) || 120);
+  const keyName = (sheet.key || 'Ab').replace(/\(.*?\)/g, '').trim();
+  const keyNum = KEY_NUM[keyName] ?? 8;
+  const meterNum = parseInt((sheet.meter || '4/4').split('/')[0], 10) || 4;
+
+  // 逐小节按标记裁拍（与渲染/MIDI 用同一套保守规则）
+  const parts = [];
+  const total = Math.ceil(sheet.groups.length / BEATS_PER_MEASURE);
+  for (let m = 0; m < total; m++) {
+    const meas = sheet.groups.slice(m * BEATS_PER_MEASURE, (m + 1) * BEATS_PER_MEASURE);
+    const last = meas[meas.length - 1];
+    const keep = (last && last.raw[3] === '<') ? meas.slice(0, 6) : meas;
+    for (const g of keep) {
+      const idxs = [...new Set(g.validNotes.map(n => n.index))].sort((a, b) => a - b);
+      parts.push(idxs.length ? idxs.map(i => ABC_LABELS[i]).join('') : '.');
+    }
+  }
+  while (parts.length && parts[parts.length - 1] === '.') parts.pop();   // 舍去结尾休止
+
+  const line1 = `<DontCopyThisLine> ${tempo * 2} ${keyNum} ${meterNum * 4} Unknown Unknown`;
+  return line1 + '\n' + parts.join(' ') + ' \n';
+}
+
 /* ---------- 状态与交互 ---------- */
 const state = { sheets: [], active: -1, page: 0, bg: '', bright: 70, pos: 50 };
 const $ = id => document.getElementById(id);
@@ -561,13 +590,15 @@ const fmt = () => document.querySelector('input[name=fmt]:checked').value;
 function exportSheet(s) {
   if (fmt() === 'mid') {
     download(new Blob([toMidi(s)], { type: 'audio/midi' }), safeName(s.name) + '.mid');
+  } else if (fmt() === 'txt') {
+    download(new Blob([toSkyStudioTxt(s)], { type: 'text/plain' }), safeName(s.name) + '.txt');
   } else {
     window.print();                        // PDF 走浏览器打印，样式见 @media print
   }
 }
 $('expOne').onclick = () => { const s = state.sheets[state.active]; if (s) exportSheet(s); };
 $('expAll').onclick = () => {
-  if (fmt() === 'mid') state.sheets.forEach((s, i) => setTimeout(() => exportSheet(s), i * 250));
+  if (fmt() !== 'pdf') state.sheets.forEach((s, i) => setTimeout(() => exportSheet(s), i * 250));
   else window.print();
 };
 

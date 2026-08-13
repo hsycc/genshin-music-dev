@@ -210,39 +210,100 @@ const ABC_LABELS = ['A', 'B', 'C'].flatMap(r => [1, 2, 3, 4, 5].map(c => `${r}${
 const ABC_TO_INDEX = Object.fromEntries(ABC_LABELS.map((l, i) => [l, i]))
 const ABC_REST = new Set(['.', '-', '_'])
 
+/* 兼容两种方言：
+   - Sky Studio 导出（机器产物）：仅用「和弦连写 + '.' 休止 + 空格分隔」
+   - Sky ABC1-5 手写谱（Tablature Maker）：另有 '-' 快速连奏、'*N' 重复
+   分隔符取自 sky-python-music-sheet-maker 的 Resources.DELIMITERS：
+     icon=' '  pause='.'  quaver='-'  repeat='*'                        */
+const ABC_CHORD = /^(?:[ABC][1-5])+$/
+const ABC_REPEAT = /^(.+?)\*(\d+)$/
+
+/** 一个 icon（时值）是否合法：可含 '-' 分隔的多个和弦、可带 '*N' */
+function isAbcToken(tok) {
+    const m = ABC_REPEAT.exec(tok)
+    const body = m ? m[1] : tok
+    if (ABC_REST.has(body)) return true
+    return body.split('-').every(c => ABC_CHORD.test(c))
+}
+
+/** 一行是否「整行都是 ABC token」（谱面行） */
+function isNoteLine(line) {
+    const toks = line.trim().split(/\s+/).filter(Boolean)
+    return toks.length >= 2 && toks.every(isAbcToken)
+}
+
+/* 格式判别不依赖 `<DontCopyThisLine>` 头 —— 那行源自 Specy 2020 前作
+   toggleABCExport() 的页面文本框提示（提醒用户别复制元数据行），
+   不是格式的必要组成，手写或别的工具产出的文件可能没有。 */
 function isAbcFormat(text) {
-    return /^\s*<DontCopyThisLine>/i.test(text)
+    return text.split(/\r?\n/).some(isNoteLine)
+}
+
+/** 一个 icon 展开成若干列。返回 [{indices, tempoChanger}] */
+function expandIcon(tok, warnings) {
+    const m = ABC_REPEAT.exec(tok)
+    const repeat = m ? Math.max(1, Number(m[2])) : 1
+    const body = m ? m[1] : tok
+
+    const chords = ABC_REST.has(body) ? [null] : body.split('-')
+    // 一个 icon 占一拍；内含 n 个快速连奏时，每个占 1/n。
+    // composed 的 tempoChanger 只有 1、1/2、1/4、1/8 四档，n 非 2 的幂时无法精确表达。
+    const n = chords.length
+    const TC_OF = {1: 0, 2: 1, 4: 2, 8: 3}
+    let tc = TC_OF[n]
+    if (tc === undefined) {
+        tc = n <= 3 ? 1 : n <= 6 ? 2 : 3          // 取最接近的一档
+        warnings.push(`${tok}（${n} 连音）无法用 tempoChanger 精确表达，已近似为 1/${2 ** tc} 拍`)
+    }
+    const out = []
+    for (let r = 0; r < repeat; r++) {
+        for (const c of chords) {
+            if (c === null) { out.push({indices: [], tempoChanger: tc}); continue }
+            const labels = c.match(/[ABC][1-5]/g) || []
+            out.push({
+                indices: [...new Set(labels.map(l => ABC_TO_INDEX[l]))].sort((a, b) => a - b),
+                tempoChanger: tc,
+            })
+        }
+    }
+    return out
 }
 
 function parseAbcSheet(text, fallbackName) {
-    const lines = text.split(/\r?\n/)
-    const head = (lines.shift() || '').trim().split(/\s+/)
-    const speed = Number(head[1])
-    const keyNum = Number(head[2])
-    const meterNum = Number(head[3])
-    if (!Number.isFinite(speed) || speed <= 0) fail(`ABC 首行的速度 ${JSON.stringify(head[1])} 无效`)
+    const lines = text.split(/\r?\n/).filter(l => l.trim())
+    const noteLines = lines.filter(isNoteLine)
+    const headLines = lines.filter(l => !isNoteLine(l))
+    if (!noteLines.length) fail('未找到 ABC 谱面行（整行都是 A1–C5 token 的行）')
 
-    const tokens = lines.join(' ').split(/\s+/).filter(Boolean)
-    if (!tokens.length) fail('ABC 谱面为空')
+    // 头部可有可无：形如 `<DontCopyThisLine> 240 8 16 …`，取其中前三个数
+    let speed = null, keyNum = null, meterNum = null
+    for (const h of headLines) {
+        const nums = h.match(/-?\d+/g)
+        if (nums && nums.length >= 3) { [speed, keyNum, meterNum] = nums.slice(0, 3).map(Number); break }
+    }
 
     const columns = []
-    tokens.forEach((tok, i) => {
-        if (ABC_REST.has(tok)) { columns.push([]); return }
-        const labels = tok.match(/[ABC][1-5]/g) || []
-        if (labels.join('') !== tok) {
-            fail(`第 ${i + 1} 个时值 ${JSON.stringify(tok)} 含无法识别的标签。`
-                + `\n       合法标签: ${ABC_LABELS.join(' ')}，休止用 '.'`)
+    const warnings = []
+    let quaverIcons = 0, repeatIcons = 0
+    noteLines.join(' ').split(/\s+/).filter(Boolean).forEach((tok, i) => {
+        if (!isAbcToken(tok)) {
+            fail(`第 ${i + 1} 个时值 ${JSON.stringify(tok)} 无法识别。`
+                + `\n       合法写法: 和弦连写 ${ABC_LABELS.slice(0, 3).join('/')}…、'-' 快速连奏、'*N' 重复、'.' 休止`)
         }
-        columns.push([...new Set(labels.map(l => ABC_TO_INDEX[l]))].sort((a, b) => a - b))
+        if (tok.includes('-')) quaverIcons++
+        if (tok.includes('*')) repeatIcons++
+        columns.push(...expandIcon(tok, warnings))
     })
+    for (const w of [...new Set(warnings)].slice(0, 5)) warn(w)
 
     return {
         name: fallbackName,
-        // 首行的 tempo 已经是「一个时值 = 60000/该值 毫秒」，直接用作输出 bpm
-        bpm: speed,
-        key: Number.isFinite(keyNum) && PITCHES[keyNum] ? PITCHES[keyNum] : 'C',
+        bpm: Number.isFinite(speed) && speed > 0 ? speed : null,
+        key: Number.isFinite(keyNum) && PITCHES[keyNum] ? PITCHES[keyNum] : null,
         meter: Number.isFinite(meterNum) ? `${meterNum / 4}/4` : '4/4',
         difficulty: '',
+        hasHeader: speed !== null,
+        quaverIcons, repeatIcons,
         columns,
     }
 }
@@ -313,7 +374,10 @@ function beatToNotes(beat, noteMap, maxNote, location) {
 // ---------------------------------------------------------------------------
 /** 把「每列的音符索引数组」组装成 composed v3（两种输入格式共用） */
 function columnsToSong(columns, opts, parsed) {
-    const serialized = columns.map(idxs => [0, idxs.map(i => [i, '1'])])
+    // columns 可以是「索引数组」也可以是 {indices, tempoChanger}
+    const serialized = columns.map(c => Array.isArray(c)
+        ? [0, c.map(i => [i, '1'])]
+        : [c.tempoChanger ?? 0, c.indices.map(i => [i, '1'])])
     const instruments = [{
         name: opts.instrument,
         volume: DEFAULT_VOLUME[opts.app],
@@ -434,22 +498,26 @@ function main() {
         const abc = parseAbcSheet(text, baseName)
         opts.bpm = opts.bpm ?? abc.bpm
         opts.pitch = opts.pitch ?? abc.key
+        if (!opts.bpm) fail('该 ABC 文件没有元数据头，请用 --bpm 指定一个时值的速度')
+        if (!opts.pitch) { warn('该 ABC 文件没有元数据头，调性回退为 C（可用 --pitch 指定）'); opts.pitch = 'C' }
         if (!PITCHES.includes(opts.pitch)) fail(`--pitch 只能是 ${PITCHES.join(' ')}`)
         opts.instrument = opts.instrument ?? DEFAULT_INSTRUMENT[opts.app]
         const maxNote = NOTES_PER_COLUMN[opts.app]
-        const bad = abc.columns.flat().find(i => i >= maxNote)
+        const bad = abc.columns.flatMap(c => c.indices).find(i => i >= maxNote)
         if (bad !== undefined) fail(`音符索引 ${bad} 超出 ${opts.app} 的 0..${maxNote - 1}`)
 
         const song = columnsToSong(abc.columns, opts, abc)
-        const noteCount = abc.columns.reduce((a, c) => a + c.length, 0)
+        const noteCount = abc.columns.reduce((a, c) => a + c.indices.length, 0)
         const ms = abc.columns.length * (60000 / opts.bpm)
         console.error([
             `曲名        ${song.name}`,
             `输入格式    Sky Studio ABC txt`,
             `目标应用    ${opts.app}（键位 0..${maxNote - 1}）`,
-            `速度/节拍   ${abc.bpm} / ${abc.meter}  →  输出 bpm ${opts.bpm}`,
-            `调性        ${abc.key}  →  pitch "${opts.pitch}"`,
-            `列数        ${abc.columns.length}（空列 ${abc.columns.filter(c => !c.length).length}）`,
+            `速度/节拍   ${abc.hasHeader ? abc.bpm : '(无头部)'} / ${abc.meter}  →  输出 bpm ${opts.bpm}`,
+            `调性        ${abc.key ?? '(无头部)'}  →  pitch "${opts.pitch}"`,
+            `列数        ${abc.columns.length}（空列 ${abc.columns.filter(c => !c.indices.length).length}）`,
+            ...(abc.quaverIcons ? [`快速连奏    ${abc.quaverIcons} 个 icon 含 '-'`] : []),
+            ...(abc.repeatIcons ? [`重复标记    ${abc.repeatIcons} 个 icon 含 '*'`] : []),
             `音符        ${noteCount}`,
             `估算时长    ${Math.floor(ms / 60000)}:${String(Math.round(ms % 60000 / 1000)).padStart(2, '0')}`,
         ].join('\n'))

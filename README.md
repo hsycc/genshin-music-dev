@@ -12,6 +12,7 @@
 | `你你234你你123你.skysheet.json` | 转换产物。378 列 / 471 音符 |
 | `note-map.example.json` | 字符 → 音符索引映射表示例，传给 `--map` |
 | `adversarial-roundtrip.skysheet.json` | 往返测试的对抗样本 |
+| `normalizeSheet.js` | **归一化器**：四种输入格式 → 统一事件流（硬件用） |
 | `roundTripCorpus.js` | 对整个曲库跑往返测试，统计损耗分布 |
 | `format-versions/` | composed / recorded 各历史版本的结构对照样本 |
 | `text-export/` | app 自带文本谱导出格式的渲染样例 |
@@ -26,6 +27,101 @@ node test-sheets/textSheetToComposed.js "test-sheets/你你234你你123你.txt"
 ```
 
 不带 `-o` 时输出落在**输入文件同目录**，文件名取 `曲名` 字段。
+
+## 归一化器 `normalizeSheet.js`
+
+`textSheetToComposed.js` 是**文本谱 → 本仓 JSON** 的单向转换器。硬件侧需要的是反方向：
+把任意来源的曲谱读成一条**可直接驱动键盘的事件流**。这是 `normalizeSheet.js`。
+
+```bash
+node test-sheets/normalizeSheet.js <file> [--app Sky|Genshin] [--json] [--pretty]
+```
+
+### 支持的输入（自动识别，不看扩展名）
+
+| 输入 | 识别依据 | 曲库占比 |
+|---|---|---|
+| composed v1/v2/v3 JSON | `type` 或 `data.isComposedVersion` | 78.05% |
+| recorded v1/v2 JSON | 同上 | 21.94% |
+| smc 文本谱 | 含 `曲谱:[...]` | — |
+| Sky Studio ABC txt / Sky ABC1-5 | 存在整行都是 ABC token 的行 | — |
+
+`vsrg` 和 `midi` 类型显式报错，不静默产出空结果。
+
+### 输出结构
+
+```jsonc
+{
+  "meta": {
+    "name", "sourceFormat", "sourceVersion",
+    "app", "keyCount", "rows", "cols",          // Sky 3×5=15 / Genshin 3×7=21
+    "bpm", "pitch", "transposeSemitones",       // pitch 已折算成半音数
+    "meter", "difficulty", "reverb",
+    "instruments": [{ "name", "volume", "pitch", "muted", "alias", "icon",
+                      "visible", "reverbOverride" }],
+    "durationMs", "noteCount", "eventCount", "columnCount",
+    "midiRange": [lo, hi],
+    "usedLayers": [0, 1, 2]                     // 实际用到的层，可预分配音色
+  },
+  "sections": [{ "column", "time" }],           // 小节 / 段落标记 → 时刻
+  "events": [{
+    "time",          // ms，绝对时刻
+    "deltaMs",       // 到下一事件的间隔，定时器直接用这个
+    "tempoChanger",  // 该列的变速档 0..3（recorded 来源为 null）
+    "column",        // 原列号，用于回溯或滚动显示
+    "keys": [{
+      "index",       // 0..keyCount-1，游戏内键位编号
+      "row", "col",  // 物理行列 —— LED 寻址直接用
+      "midi",        // 绝对音高，已含调性移调
+      "layer",       // 原始层位掩码（hex 串，最高 52 位）
+      "layers": [],  // 展开的层号，对应 meta.instruments 下标
+      "slot"         // smc 专有：时值内的行位（0 上 / 1 中 / 2 下）
+    }]
+  }],
+  "warnings": []
+}
+```
+
+关键设计：**按同时发声分组**。一个 `event` 就是"这一刻要按下的所有键"，
+和弦不用在消费端二次聚合，LED 一次点亮一组。
+
+### 交叉验证
+
+同一首曲子的三种表示喂进去，结果完全一致：
+
+| 输入 | 事件 | 音符 | bpm | 调性 | MIDI 范围 |
+|---|---|---|---|---|---|
+| `Call Of Silence.smc` | 189 | 471 | 240 | Ab | 68–92 |
+| `你你234你你123你.skysheet.json`（composed v3） | 189 | 471 | 240 | Ab | 68–92 |
+| `text-export/你你234你你123你.skystudio.txt`（ABC） | 189 | 471 | 240 | Ab | 68–92 |
+
+三条独立路径收敛，说明 smc 字符表、调性折算、时值换算三处都没有偏差。
+
+### 全曲库压测
+
+对 `Sky1984-Sheets-Collection`（16101 个文件）：
+
+```
+成功 16090 / 失败 11
+事件 6,212,968   音符 10,672,587   段落标记 3,125
+格式分布  composed v3: 12560   recorded v2: 3530
+索引上限 14   MIDI 60–95   最长 layer 掩码 0x1000000000000（52 bit）
+警告 0
+```
+
+11 个失败全部是真的不支持，不是解析缺陷：`vsrg` 2、缺 `type` 字段 4、
+非曲谱文本 4、JSON 本身损坏 1。
+
+### 压测暴露的两个真 bug（已修）
+
+**1. layer 位掩码溢出。** 曲库里实际存在 `0x1000000000000`（2^48）的层掩码。
+本仓 `NoteLayer` 用 BigInt，`BASE_LAYER_LIMIT = 52`；用 `parseInt` + `1 << b`
+读它会静默出错 —— JS 的移位运算把右操作数取模 32，`1 << 48` 等于 `1 << 16`，
+层号会被算成 16。改为全程 BigInt，`layer` 以 hex 串输出保证可 JSON 序列化。
+
+**2. `Math.min(...arr)` 爆栈。** 曲库里有一首 16 万音符的曲子，
+展开成参数列表直接 `Maximum call stack size exceeded`。改成循环累计。
+这一首贡献了 164212 音符 / 4545 事件 —— 修掉后总音符数从 1050 万涨到 1067 万。
 
 ## 字符映射（需要人工确认）
 
