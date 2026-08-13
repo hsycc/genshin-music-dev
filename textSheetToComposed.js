@@ -14,6 +14,10 @@
  *     前 7 个时值的第 4 字符无意义（通常是空格）
  *   - 默认一个时值 = 八分音符
  *
+ * 支持两种输入，自动识别：
+ *   - smc 文本谱：曲名:[] 速度:[] … 曲谱:[1FD …]
+ *   - Sky Studio ABC txt：首行 <DontCopyThisLine> …，其后 A1A4B3 …
+ *
  * 用法:
  *   node scripts/textSheetToComposed.js <input.txt> [options]
  */
@@ -192,6 +196,57 @@ function parseKey(raw) {
     return {pitch: PITCHES[semi], octave: octave ? octave[1] : null, note: n}
 }
 
+
+// ---------------------------------------------------------------------------
+// Sky Studio ABC txt 格式
+// ---------------------------------------------------------------------------
+/* 形如：
+     <DontCopyThisLine> 240 8 16 Unknown Unknown
+     A1A4B3 A1A4B3 A5B1 A1A4 . . A3B1C5 ...
+   首行 = tempo(已×2) / 音名下标 / 拍号分子×4 / 作者 / 扒谱者
+   其后每个 token = 一个时值，音符标签直接拼接，'.' 为休止。
+   标签布局 A1–A5 / B1–B5 / C1–C5，与本仓 Config.ts 的 defaultSky.abcLayout 一致。 */
+const ABC_LABELS = ['A', 'B', 'C'].flatMap(r => [1, 2, 3, 4, 5].map(c => `${r}${c}`))
+const ABC_TO_INDEX = Object.fromEntries(ABC_LABELS.map((l, i) => [l, i]))
+const ABC_REST = new Set(['.', '-', '_'])
+
+function isAbcFormat(text) {
+    return /^\s*<DontCopyThisLine>/i.test(text)
+}
+
+function parseAbcSheet(text, fallbackName) {
+    const lines = text.split(/\r?\n/)
+    const head = (lines.shift() || '').trim().split(/\s+/)
+    const speed = Number(head[1])
+    const keyNum = Number(head[2])
+    const meterNum = Number(head[3])
+    if (!Number.isFinite(speed) || speed <= 0) fail(`ABC 首行的速度 ${JSON.stringify(head[1])} 无效`)
+
+    const tokens = lines.join(' ').split(/\s+/).filter(Boolean)
+    if (!tokens.length) fail('ABC 谱面为空')
+
+    const columns = []
+    tokens.forEach((tok, i) => {
+        if (ABC_REST.has(tok)) { columns.push([]); return }
+        const labels = tok.match(/[ABC][1-5]/g) || []
+        if (labels.join('') !== tok) {
+            fail(`第 ${i + 1} 个时值 ${JSON.stringify(tok)} 含无法识别的标签。`
+                + `\n       合法标签: ${ABC_LABELS.join(' ')}，休止用 '.'`)
+        }
+        columns.push([...new Set(labels.map(l => ABC_TO_INDEX[l]))].sort((a, b) => a - b))
+    })
+
+    return {
+        name: fallbackName,
+        // 首行的 tempo 已经是「一个时值 = 60000/该值 毫秒」，直接用作输出 bpm
+        bpm: speed,
+        key: Number.isFinite(keyNum) && PITCHES[keyNum] ? PITCHES[keyNum] : 'C',
+        meter: Number.isFinite(meterNum) ? `${meterNum / 4}/4` : '4/4',
+        difficulty: '',
+        columns,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 解析曲谱正文
 // ---------------------------------------------------------------------------
@@ -256,6 +311,35 @@ function beatToNotes(beat, noteMap, maxNote, location) {
 // ---------------------------------------------------------------------------
 // 构建 composed v3
 // ---------------------------------------------------------------------------
+/** 把「每列的音符索引数组」组装成 composed v3（两种输入格式共用） */
+function columnsToSong(columns, opts, parsed) {
+    const serialized = columns.map(idxs => [0, idxs.map(i => [i, '1'])])
+    const instruments = [{
+        name: opts.instrument,
+        volume: DEFAULT_VOLUME[opts.app],
+        pitch: '',
+        visible: true,
+        icon: ICONS[1],
+        alias: '',
+        muted: false,
+        reverbOverride: null,
+    }]
+    return {
+        name: opts.name ?? parsed.name ?? 'Untitled',
+        type: 'composed',
+        bpm: opts.bpm,
+        pitch: opts.pitch,
+        version: 3,
+        folderId: null,
+        data: {isComposed: true, isComposedVersion: true, appName: opts.app},
+        reverb: false,
+        breakpoints: opts.breakpointList ?? [0],
+        instruments,
+        columns: serialized,
+        id: null,
+    }
+}
+
 function buildSong(parsed, opts) {
     const maxNote = NOTES_PER_COLUMN[opts.app]
     const noteMap = opts.noteMap
@@ -322,6 +406,16 @@ function buildSong(parsed, opts) {
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
+function writeOut(song, opts) {
+    const ext = opts.app === 'Sky' ? 'skysheet.json' : 'genshinsheet.json'
+    const out = opts.out ?? path.join(
+        path.dirname(path.resolve(opts.input)),
+        `${song.name.replace(/[/\\:*?"<>|]/g, '_')}.${ext}`
+    )
+    fs.writeFileSync(out, JSON.stringify(opts.raw ? song : [song], null, 1), 'utf-8')
+    console.error(`\n已写入 ${out}`)
+}
+
 function main() {
     const opts = parseArgs(process.argv.slice(2))
     if (!opts.input) {
@@ -333,6 +427,37 @@ function main() {
     if (![4, 8, 16, 32].includes(opts.subdivision)) fail(`--subdivision 只能是 4 / 8 / 16 / 32`)
 
     const text = fs.readFileSync(opts.input, 'utf-8')
+    const baseName = path.basename(opts.input).replace(/\.[^.]+$/, '')
+
+    // ---- Sky Studio ABC txt 分支：结构简单，音符索引可直接得出 ----
+    if (isAbcFormat(text)) {
+        const abc = parseAbcSheet(text, baseName)
+        opts.bpm = opts.bpm ?? abc.bpm
+        opts.pitch = opts.pitch ?? abc.key
+        if (!PITCHES.includes(opts.pitch)) fail(`--pitch 只能是 ${PITCHES.join(' ')}`)
+        opts.instrument = opts.instrument ?? DEFAULT_INSTRUMENT[opts.app]
+        const maxNote = NOTES_PER_COLUMN[opts.app]
+        const bad = abc.columns.flat().find(i => i >= maxNote)
+        if (bad !== undefined) fail(`音符索引 ${bad} 超出 ${opts.app} 的 0..${maxNote - 1}`)
+
+        const song = columnsToSong(abc.columns, opts, abc)
+        const noteCount = abc.columns.reduce((a, c) => a + c.length, 0)
+        const ms = abc.columns.length * (60000 / opts.bpm)
+        console.error([
+            `曲名        ${song.name}`,
+            `输入格式    Sky Studio ABC txt`,
+            `目标应用    ${opts.app}（键位 0..${maxNote - 1}）`,
+            `速度/节拍   ${abc.bpm} / ${abc.meter}  →  输出 bpm ${opts.bpm}`,
+            `调性        ${abc.key}  →  pitch "${opts.pitch}"`,
+            `列数        ${abc.columns.length}（空列 ${abc.columns.filter(c => !c.length).length}）`,
+            `音符        ${noteCount}`,
+            `估算时长    ${Math.floor(ms / 60000)}:${String(Math.round(ms % 60000 / 1000)).padStart(2, '0')}`,
+        ].join('\n'))
+        if (opts.dry) { console.error('\n--dry 模式，未写文件'); return }
+        writeOut(song, opts)
+        return
+    }
+
     const parsed = parseHeader(text)
 
     // 字符映射
@@ -386,14 +511,7 @@ function main() {
         return
     }
 
-    const ext = opts.app === 'Sky' ? 'skysheet.json' : 'genshinsheet.json'
-    const out = opts.out ?? path.join(
-        path.dirname(path.resolve(opts.input)),
-        `${song.name.replace(/[/\\:*?"<>|]/g, '_')}.${ext}`
-    )
-    const payload = opts.raw ? song : [song]
-    fs.writeFileSync(out, JSON.stringify(payload, null, 1), 'utf-8')
-    console.error(`\n已写入 ${out}`)
+    writeOut(song, opts)
 }
 
 main()

@@ -11,7 +11,8 @@
 | `你你234你你123你.txt` | 输入文本谱。`曲名:[] 速度:[120] 节拍:[4/4] 调性:[Ab(8vb)] 难度:[4] 曲谱:[...]`，408 时值 / 51 小节 |
 | `你你234你你123你.skysheet.json` | 转换产物。378 列 / 471 音符 |
 | `note-map.example.json` | 字符 → 音符索引映射表示例，传给 `--map` |
-| `adversarial-roundtrip.skysheet.json` | 往返测试的对抗样本，见 [往返测试](#往返测试-columns--notes--columns) |
+| `adversarial-roundtrip.skysheet.json` | 往返测试的对抗样本 |
+| `roundTripCorpus.js` | 对整个曲库跑往返测试，统计损耗分布 |
 | `format-versions/` | composed / recorded 各历史版本的结构对照样本 |
 | `text-export/` | app 自带文本谱导出格式的渲染样例 |
 | `invalid/` | 触发各条报错分支的畸形输入 |
@@ -120,15 +121,65 @@ app 共支持 9 种记谱体系，定义在 `src/Config.ts` 的 `NoteNameType` /
 node test-sheets/roundTripTest.js <composed.json> [precision=4]
 ```
 
-### 结论：真实曲子上是无损的
+### 结论：**单向无损** —— 方向不对称
 
-| 样本 | 归一化后真实差异 |
+| 方向 | 是否无损 |
 |---|---|
-| `../test-songs/new-format-composed.skysheet.json`（100 列，四档变速齐全） | **0 列** ✓ |
-| `../docs/assets/Example_Composed-Wintergatan-TOWRPN.skysheet.json`（373 列，481 音符） | **0 列** ✓ |
-| `adversarial-roundtrip.skysheet.json`（对抗样本，20 列） | 20 列全变 ✗ |
+| **composed → recorded** | ✅ **完全无损**。确定性展开，逐列累加时间戳，不合并、不量化、不丢弃 |
+| **recorded → composed** | ⚠️ **有损**。需从时间间隔反推网格，是近似过程 |
 
-音符集合（`index` + `layer`）在三个样本里**全部守恒**。
+```js
+// composed → recorded：每列的音符打上累计时刻，一一对应
+let t = 100
+for (const col of columns) {
+  for (const n of col.notes) notes.push({index: n.index, time: t})
+  t += Math.round(msPerBeat * TEMPO_CHANGERS[col.tempoChanger])
+}
+```
+
+### 反向的损耗 —— 全量实测
+
+`roundTripCorpus.js` 对社区曲库逐首做 `composed → recorded → composed`
+（样本：`Sky1984-Sheets-Collection` 前 2000 个文件中的 **1484 首 composed**）：
+
+| 结果 | 数量 | 占比 |
+|---|---:|---:|
+| 完全一致 | 1024 | 69.0% |
+| 仅尾部空列差异 | 37 | 2.5% |
+| **网格结构变化** | **420** | **28.3%** |
+| **音符集合不守恒** | **3** | **0.2%** |
+
+```bash
+node test-sheets/roundTripCorpus.js /path/to/Sky1984-Sheets-Collection [最大文件数]
+```
+
+> ⚠️ **本文档早期版本据 2 首样本断言「真实曲子上是无损的」，该结论已推翻。**
+> 扩大到 1484 首后，近三成会发生网格结构变化。两首样本恰好都是变速规整的曲子，
+> 不具代表性 —— **小样本上的"零差异"不能外推成"无损"**。
+
+### 丢音符的三首：全是极端文件
+
+| 文件 | bpm | 一拍 | 合并阈值 | 音符 |
+|---|---:|---:|---:|---|
+| `bm_ouranos` | 1276 | 47ms | 5.2ms | 164212 → 丢 125883 |
+| `bm_ouranos`（变体） | 1276 | 47ms | 5.2ms | 63021 → 丢 24014 |
+| `Touhou IN - Gensokyo…` | 650 | 92ms | 10.3ms | 1330 → 丢 41 |
+
+成因：`toComposedSong` 用 `bpmToMs / 9` 作为和弦合并阈值。bpm 极高时阈值缩到 5ms，
+**原本分处不同时刻的音符被并进同一列，再按索引去重就丢了**。
+`bm_ouranos` 平均每列 28 个音符而乐器只有 15 个键，说明源文件同列存在重复索引，
+去重必然丢——属病态文件，非常规情况。
+
+### 对硬件/播放场景的意义
+
+**只需要 `composed → 时间戳` 这个方向，而它是精确的。**
+
+```
+composed v3  ──精确──→  [(index, timeMs)]
+recorded v2  ──直接就是──↗
+```
+
+反向转换只有作曲器需要。上面那 28.3% 的网格变化与 0.2% 的丢音符**都不影响播放**。
 
 ### 两类无害差异
 
@@ -167,14 +218,14 @@ while (difference >= combinations[3]) {                              // ≥ 1/8 
 
 ### 守恒性汇总
 
-| 维度 | 守恒 |
-|---|---|
-| 音符集合（index + layer） | ✅ |
-| 播放时长与听感 | ✅ |
-| 尾部空列 | ❌ 丢失（无害） |
-| 列内音符顺序 | ❌ 变为升序（无害） |
-| 网格结构（连续同档变速列） | ❌ 合并成更粗档位 |
-| `breakpoints` | ❌ 完全丢失，`toRecordedSong` 不携带 |
+| 维度 | composed → recorded | recorded → composed |
+|---|---|---|
+| 音符集合（index + layer） | ✅ 精确 | ⚠️ 99.8% 守恒（极端高 bpm 文件会丢） |
+| 音符时刻 | ✅ 精确 | ⚠️ 量化到网格 |
+| 尾部空列 | — | ❌ 丢失（无害） |
+| 列内音符顺序 | — | ❌ 变为升序（无害） |
+| 网格结构（变速档序列） | — | ❌ 28.3% 会变 |
+| `breakpoints` | ❌ 不携带 | ❌ 不重建 |
 
 ## 为什么 composed 和 recorded 是两种格式
 
@@ -251,7 +302,8 @@ Sound of Silence 六条轨里**三条整轨全灭**（1295 个音符全部超范
 
 | 转换 | 损失程度 |
 |---|---|
-| `composed ↔ recorded` | 音符集合守恒，只丢尾部空列和网格粒度 |
+| `composed → recorded` | **精确无损** |
+| `recorded → composed` | 28.3% 网格结构变化，0.2% 丢音符 |
 | `MIDI → composed` | **典型丢 50%+ 音符**，力度/时长/延音全丢 |
 | `composed → MIDI` | 只剩本位音（`NOTE_MAP_TO_MIDI` 只收 `isAccidental === false` 的条目），时长写死 |
 
@@ -478,17 +530,28 @@ v2→v3 的实质就是这一栏，`columns` 一字未改，两版谱面数据�
 
 从 `skystudio-decrypt` 的源码提取，与本仓 `VisualSong` / `Config.ts` 对照。
 
-### ABC 记谱互不兼容 ⚠️
+### ABC 记谱：本仓与 smc 作者一致，第三方解密工具是例外
 
-同样是 15 个键，两边的 ABC 标签**完全不同**：
+**本仓与 smc 作者的工具用的是同一套 ABC 标签**（3 行 × 5，按键盘物理布局）：
 
 ```
-本仓       A1 A2 A3 A4 A5  B1 B2 B3 B4 B5  C1 C2 C3 C4 C5     ← 3 行 × 5，按键盘物理布局
-Sky Studio A1 A2 A3 A4 A5 A6 A7  B1 B2 B3 B4 B5 B6 B7  C1     ← 7+7+1，按八度分组
+A1 A2 A3 A4 A5   B1 B2 B3 B4 B5   C1 C2 C3 C4 C5      索引 0–14
 ```
 
-同一个键位索引 5：本仓叫 `B1`，Sky Studio 叫 `A6`。
-**两边导出的 ABC 文本谱不能互读。**
+已由端到端核对证实：作者工具导出的 Sky Studio txt 与本仓按此布局推算的
+**377 个时值逐位零差异**（详见 `text-format-spec.md` 的端到端核对一节）。
+
+例外是第三方的 [`skystudio-decrypt`](https://github.com/bilibiliales/skystudio-decrypt)，
+它用 7+7+1 分组：
+
+```
+A1 A2 A3 A4 A5 A6 A7   B1 B2 B3 B4 B5 B6 B7   C1          索引 0–14
+```
+
+同一索引 5，本仓与 smc 作者叫 `B1`，该工具叫 `A6` —— **只有它与另外两方不能互读**。
+
+> ⚠️ 本文档早期版本据该解密工具的源码断言「本仓与 Sky Studio 生态的 ABC 互不兼容」，
+> 属于**以偏概全** —— 一个第三方工具的选择不代表整个生态。已更正。
 
 ### 简谱记谱完全一致 ✓
 
@@ -636,9 +699,9 @@ Discord 规则第 12 条明令禁止宣传这类工具：
 三行各 5 键 → `A1..A5` / `B1..B5` / `C1..C5`，**与本仓的 `keyboardLayout` 和
 `abcLayout` 逐字对应**。
 
-所以前面「ABC 记谱互不兼容」一节的结论可以补全：
-**本仓遵循的是 2018 年 Tracey 定下的社区原始标准，偏离的是 Sky Studio**
-（后者用 `A1..A7 / B1..B7 / C1`）。
+所以前面 ABC 记谱那节的结论可以补全：**本仓遵循的是 2018 年 Tracey 定下的
+社区原始标准**，smc 作者的工具也用这一套；偏离的只有第三方的
+`skystudio-decrypt`（用 `A1..A7 / B1..B7 / C1`）。
 
 ### 曲库最早的载体是论坛，不是 GitHub
 
@@ -695,3 +758,67 @@ Discord 规则第 12 条明令禁止宣传这类工具：
 | https://github.com/bilibiliales/skystudio-decrypt | 加密 txt 解密 + 简谱/方格谱预览 |
 | https://bilibiliales.github.io/skystudio-decrypt/ | 上者的在线版 |
 | https://github.com/ghostlium/genshinSkyLimit | Sky Studio JSON → 原神格式 |
+
+## 社区曲库的格式实况（全量统计）
+
+对 [`Ai-Vonie/Sky1984-Sheets-Collection`](https://github.com/Ai-Vonie/Sky1984-Sheets-Collection)
+做全量扫描（2026-08 快照，**16092 个谱子**，本地副本在
+`/Users/hsycc/vibe_coding/Sky1984-Sheets-Collection`）。
+该库 README 明确声明服务于 *Sky Music Nightly*（即本仓）。
+
+### 格式分布
+
+| 格式 | 数量 | 占比 |
+|---|---:|---:|
+| **composed v3** | 12560 | **78.05%** |
+| **recorded v2** | 3530 | **21.94%** |
+| vsrg v1 | 2 | 0.01% |
+| Sky Studio ABC txt | **0** | 0% |
+| 加密 JSON | **0** | 0% |
+| 远古 songNotes | **0** | 0% |
+
+`appName` 全部为 `Sky`，16092 个无一例外。文件一律用 `.txt` 扩展名，内容是 JSON。
+
+### 三个结论
+
+**① 没有任何 v1，也没有 composed v2。** app 自 2022-06 起只写 v3
+（`ComposedSong.serialize()` 恒写 `version: 3`），活跃维护的曲库已全部规范化。
+v1 只可能存在于 2022 年年中之前导出、且从未重新保存过的老谱子里。
+
+> 但兼容 v1 仍是**零成本**的：版本差异全在 layer 编码与 `instruments` 结构上，
+> 音符元组里 `index` 的位置从未变过。只取 `note[0]`/`note[1]` 天然跨版本。
+> 唯一要注意 —— **v1 文件连 `version` 字段都没有**，别写
+> `if (song.version !== 3) reject`。
+
+**② ABC txt 与 songNotes 不作为独立格式流通。** 两者在该库出现次数均为 0。
+`songNotes` 只作为 `toOldFormat()` 的冗余字段附在 JSON 内部。
+
+**③ 两个分支覆盖 100%。**
+
+```js
+const song = Array.isArray(raw) ? raw[0] : raw
+if (song.type === 'composed') {                       // 78%
+  let t = 0; const ms = 60000 / song.bpm
+  const TC = [1, 0.5, 0.25, 0.125]
+  for (const [tc, notes] of song.columns) {
+    for (const [i] of notes) out.push({index: i, time: Math.round(t)})
+    t += ms * TC[tc]
+  }
+} else if (song.type === 'recorded') {                // 22%
+  for (const [i, time] of song.notes) out.push({index: i, time})
+}
+```
+
+⚠️ 那 2 个 `vsrg` 是音游谱（`tracks` + `hitObjects`，结构完全不同），
+判类型时**用白名单而非 else 兜底**，跳过而非崩溃。
+
+### 复现
+
+```bash
+git clone --depth 1 https://github.com/Ai-Vonie/Sky1984-Sheets-Collection.git
+# 扫描 type / version / appName 字段的统计脚本见本节上方代码思路
+```
+
+> ⚠️ 样本局限：这是**一个**曲库，且明确面向本仓，天然偏向本仓格式。
+> Sky Studio 用户社群、中文社群（B站/QQ群，多为图片版键位谱）的分布未测。
+> 「哪种格式最流通」取决于圈子，本节只能确证：**面向本仓的曲库里本仓格式占 100%**。
