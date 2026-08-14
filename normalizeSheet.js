@@ -118,9 +118,14 @@ function normInstruments(list, v) {
 /** smc 文本谱 */
 function fromSmc(text) {
     const field = (label) => (text.match(new RegExp(`${label}:\\[([^\\]]*)\\]`)) || [])[1] ?? ''
-    const body = field('曲谱')
+    // 分组方式与作者编辑器里的 scoreAnalyzer.parseGroups 一致：
+    // 先按空白切成 token，再在 token 内部每 4 字符一组。
+    // 直接对整串按 4 字符硬切的话，谱面里出现连续两个空格就会让后续全部错位。
     const beats = []
-    for (let i = 0; i < body.length; i += 4) beats.push(body.slice(i, i + 4).padEnd(4, ' '))
+    for (const token of field('曲谱').split(/\s+/)) {
+        if (!token) continue
+        for (let i = 0; i < token.length; i += 4) beats.push(token.slice(i, i + 4).padEnd(4, ' '))
+    }
     if (beats.length % 8) warn(`时值数 ${beats.length} 不是 8 的倍数，末小节不完整`)
 
     const columns = []
@@ -136,6 +141,11 @@ function fromSmc(text) {
             for (let s = 0; s < 3; s++) {
                 const ch = b[s]
                 if (SMC_REST.has(ch)) continue
+                // 作者的 parseGroups 把落进槽位的 < > 也当休止（畸形数据的防御分支）
+                if (ch === '<' || ch === '>') {
+                    warn(`第 ${columns.length + 1} 列第 ${s + 1} 槽位出现小节标记 ${ch}，按休止处理`)
+                    continue
+                }
                 const idx = SMC_MAP[ch] ?? SMC_MAP[ch.toUpperCase()]
                 if (idx === undefined) throw new Error(`未知字符 ${JSON.stringify(ch)}（第 ${columns.length + 1} 列第 ${s + 1} 槽位）`)
                 notes.push({index: idx, layer: 1n, slot: s})

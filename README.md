@@ -18,7 +18,8 @@
 | `text-export/` | app 自带文本谱导出格式的渲染样例 |
 | `invalid/` | 触发各条报错分支的畸形输入 |
 | `text-format-spec.md` | 格式规范：作者原始说明 + 源码核对结论 |
-| `reference/琴谱格式转换工具.html` | **作者的参考实现**（原件，未改动） |
+| `reference/琴谱格式转换工具.html` | **作者的转换工具**（原件，未改动） |
+| `reference/光遇乐谱编辑器(test_20260820).html` | **作者的编辑器**（原件）。TurboWarp 打包的 Scratch 项目，13.4 MB；解包方法与核对结论见 spec |
 
 ## 重新生成
 
