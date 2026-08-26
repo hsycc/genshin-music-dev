@@ -1,0 +1,1365 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>琴谱格式转换工具</title>
+    <style>
+        /* 禁止页面缩放 */
+        html, body {
+            touch-action: pan-y pinch-zoom;
+            -webkit-text-size-adjust: 100%;
+            -ms-text-size-adjust: 100%;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { 
+            font-family: 'Segoe UI', 'PingFang SC', Roboto, sans-serif; 
+            background: #f0f4f8; 
+            padding: 0;
+            margin: 0;
+            width: 1265px;
+            height: 847px;
+            display: flex; 
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+        html {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        /* 容器尺寸将由 JavaScript 在加载时动态设置固定像素值 */
+        .container { 
+            background: #fff; 
+            border-radius: 20px; 
+            box-shadow: 0 12px 40px rgba(0,0,0,0.1); 
+            padding: 24px; 
+            overflow-y: auto;
+            overflow-x: hidden;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            /* 下面这些会被 JS 覆盖 */
+            width: 0;
+            height: 0;
+            min-width: 0;
+            max-width: 0;
+            min-height: 0;
+            max-height: 0;
+        }
+        /* 滚动条美化 */
+        .container::-webkit-scrollbar { width: 6px; }
+        .container::-webkit-scrollbar-track { background: #edf2f7; border-radius: 4px; }
+        .container::-webkit-scrollbar-thumb { background: #cbd5e0; border-radius: 4px; }
+        .container::-webkit-scrollbar-thumb:hover { background: #a0aec0; }
+
+        h1 { font-size: 22px; line-height: 1.2; margin-bottom: 0; white-space: nowrap; flex-shrink: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; transform: translateY(-0.5px); }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+            flex-shrink: 0;
+            gap: 10px;
+        }
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        .format-option {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            font-size: 12px;
+            white-space: nowrap;
+            cursor: pointer;
+            position: relative;
+        }
+        .format-option.txt-opt { left: -5.5px; }
+        .format-option.mid-opt { left: -6px; }
+        .format-option.pdf-opt { left: -5px; }
+        .format-option span { transform: translateX(-1.2px); }
+        .format-option input[type="radio"] {
+            margin: 0;
+            cursor: pointer;
+            transform: translateY(1px);
+        }
+        .main-layout { 
+            display: flex; 
+            gap: 20px; 
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+        .left-panel { 
+            flex: 0 0 208px; 
+            min-width: 208px; 
+            border-right: 2px solid #e2e8f0; 
+            padding-right: 16px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .right-panel { 
+            flex: 1; 
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 0;
+        }
+        .upload-area { border: 2px dashed #cbd5e0; border-radius: 12px; padding: 0 14px; text-align: center; background: #f7fafc; cursor: pointer; transition: 0.2s; margin-bottom: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; height: 40px; }
+        .upload-area:hover { border-color: #3182ce; background: #edf2f7; }
+        .upload-area input[type="file"] { display: none; }
+        #dropZone .upload-icon { display: inline-block; transform: translateY(-1.6px); }
+        .upload-area p { font-size: 13px; }
+        .file-list { flex: 1; overflow-y: auto; min-height: 0; margin-top: 7px; }
+        /* 文件列表项：允许文件名换行，删除按钮固定右侧 */
+        .file-item { 
+            padding: 6px 8px; 
+            border-radius: 6px; 
+            margin-bottom: 3px; 
+            cursor: pointer; 
+            transition: 0.2s; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            font-size: 13px; 
+            gap: 6px;
+        }
+        .file-item:hover { background: #edf2f7; }
+        .file-item.active { background: #bee3f8; border-left: 4px solid #3182ce; }
+        .file-item .name { 
+            font-weight: 500; 
+            overflow-wrap: break-word; 
+            word-break: break-all; 
+            flex: 1; 
+            min-width: 0; 
+            line-height: 1.4;
+        }
+        .file-item .remove { 
+            background: #e53e3e; 
+            color: #fff; 
+            border: none; 
+            border-radius: 6px; 
+            padding: 0 8px; 
+            cursor: pointer; 
+            font-size: 13px; 
+            flex-shrink: 0; 
+            height: 22px;
+            line-height: 22px;
+        }
+        .file-item .remove:hover { background: #c53030; }
+        .preview-box { 
+            background: #000000; 
+            border-radius: 12px; 
+            padding: 14px; 
+            flex: 1;
+            overflow: hidden;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            isolation: isolate;
+        }
+        #previewBox::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #000000;
+            opacity: var(--bg-dim, 0);
+            pointer-events: none;
+            z-index: -1;
+        }
+        .bg-slider {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            flex-shrink: 0;
+        }
+        .bg-slider label { font-size: 12px; white-space: nowrap; transform: translateY(-1px); }
+        .bg-slider.pos-slider { position: relative; top: -1px; }
+        .bg-slider input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            flex: 1;
+            margin: 0;
+            height: 4.4px;
+            background: #d9d9d9;
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+        }
+        .bg-slider input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #737373;
+            border: none;
+            cursor: pointer;
+        }
+        .bg-slider input[type="range"]::-moz-range-thumb {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #737373;
+            border: none;
+            cursor: pointer;
+        }
+        .bg-slider input[type="range"]::-moz-range-track {
+            height: 4.4px;
+            background: #d9d9d9;
+            border-radius: 2px;
+        }
+        .bg-slider input[type="range"]::-moz-range-progress {
+            height: 4.4px;
+            background: #737373;
+            border-radius: 2px;
+        }
+
+        .preview-title {
+            text-align: center;
+            font-size: 13.2px;
+            font-weight: 500;
+            color: #ffffff;
+            margin-bottom: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex-shrink: 0;
+            transform: translateY(5px);
+            text-shadow: 1px 0 0 #1a1a1a, -1px 0 0 #1a1a1a, 0 1px 0 #1a1a1a, 0 -1px 0 #1a1a1a, 0.9239px 0.3827px 0 #1a1a1a, 0.9239px -0.3827px 0 #1a1a1a, -0.9239px 0.3827px 0 #1a1a1a, -0.9239px -0.3827px 0 #1a1a1a, 0.7071px 0.7071px 0 #1a1a1a, 0.7071px -0.7071px 0 #1a1a1a, -0.7071px 0.7071px 0 #1a1a1a, -0.7071px -0.7071px 0 #1a1a1a, 0.3827px 0.9239px 0 #1a1a1a, 0.3827px -0.9239px 0 #1a1a1a, -0.3827px 0.9239px 0 #1a1a1a, -0.3827px -0.9239px 0 #1a1a1a;
+        }
+        .preview-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 10.5px;
+            font-weight: 500;
+            color: #f2f2f2;
+            flex-shrink: 0;
+            text-shadow: 1px 0 0 #1a1a1a, -1px 0 0 #1a1a1a, 0 1px 0 #1a1a1a, 0 -1px 0 #1a1a1a, 0.9239px 0.3827px 0 #1a1a1a, 0.9239px -0.3827px 0 #1a1a1a, -0.9239px 0.3827px 0 #1a1a1a, -0.9239px -0.3827px 0 #1a1a1a, 0.7071px 0.7071px 0 #1a1a1a, 0.7071px -0.7071px 0 #1a1a1a, -0.7071px 0.7071px 0 #1a1a1a, -0.7071px -0.7071px 0 #1a1a1a, 0.3827px 0.9239px 0 #1a1a1a, 0.3827px -0.9239px 0 #1a1a1a, -0.3827px 0.9239px 0 #1a1a1a, -0.3827px -0.9239px 0 #1a1a1a;
+        }
+        .preview-params { white-space: nowrap; font-size: 9px; font-weight: 450; }
+        .preview-difficulty { white-space: nowrap; font-size: 10px; font-weight: 450; position: relative; left: -4px; }
+
+        .preview-field { margin-bottom: 4px; font-size: 13px; white-space: nowrap; }
+        .preview-field .label { font-weight: 600; color: #2d3748; }
+        .preview-field .value { color: #2d3748; }
+        .preview-field.spacer { margin-bottom: 8px; }
+
+        /* ===== 预览布局 ===== */
+        .measure-row { 
+            display: flex; 
+            gap: 0px; 
+            margin-bottom: 18px;
+            flex-shrink: 0;
+            white-space: nowrap;
+            position: relative;
+            top: -6px;
+        }
+        .measure-row::before,
+        .measure-row::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 0.65px;
+            background: #f2f2f2;
+            transform: translateY(0.8px);
+        }
+        .measure-row::before { left: 0; }
+        .measure-row::after { right: 0; }
+        .measure-group { 
+            display: flex; 
+            gap: 0px; 
+            flex-shrink: 0;
+            flex: 0 0 25%;
+            justify-content: space-between;
+            padding: 0 2px;
+            background: transparent;
+            position: relative;
+        }
+        .measure-group::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            right: 0;
+            width: 0.65px;
+            background: #f2f2f2;
+            transform: translateY(0.8px);
+        }
+        .measure-group:last-child::after {
+            display: none;
+        }
+        .measure-group.empty { 
+            opacity: 0; 
+            pointer-events: none;
+        }
+        .beat-block { 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            background: transparent;
+            border: none;
+            padding: 1px 0;
+            flex: 1;
+            min-width: 0;
+            position: relative;
+            z-index: 1;
+        }
+        .beat-block .note-line { 
+            font-family: 'Consolas', 'Courier New', monospace; 
+            font-size: 9.5px; 
+            font-weight: 650; 
+            line-height: 1.2; 
+            color: #ffffff;
+            text-align: center;
+            height: 10.8px;
+            letter-spacing: 0;
+            position: relative;
+            display: inline-block;
+            background: none;
+            padding: 0 2px;
+            border-radius: 2px;
+            transform: translateY(0.8px);
+            text-shadow: 1px 0 0 #1a1a1a, -1px 0 0 #1a1a1a, 0 1px 0 #1a1a1a, 0 -1px 0 #1a1a1a, 0.9239px 0.3827px 0 #1a1a1a, 0.9239px -0.3827px 0 #1a1a1a, -0.9239px 0.3827px 0 #1a1a1a, -0.9239px -0.3827px 0 #1a1a1a, 0.7071px 0.7071px 0 #1a1a1a, 0.7071px -0.7071px 0 #1a1a1a, -0.7071px 0.7071px 0 #1a1a1a, -0.7071px -0.7071px 0 #1a1a1a, 0.3827px 0.9239px 0 #1a1a1a, 0.3827px -0.9239px 0 #1a1a1a, -0.3827px 0.9239px 0 #1a1a1a, -0.3827px -0.9239px 0 #1a1a1a;
+        }
+        .beat-block .note-line.rest { 
+            color: transparent; 
+            visibility: hidden;
+            background: none;
+        }
+        /* 高音点：一个点 */
+        .note-line.dots-1::before {
+            content: '·';
+            position: absolute;
+            top: -5px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 9.5px;
+            line-height: 1;
+            color: #ffffff;
+            background: none;
+        }
+        /* 倍高音：两个点分开 */
+        .note-line.dots-2::before {
+            content: '·';
+            position: absolute;
+            top: -4.4px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 9.5px;
+            line-height: 1;
+            color: #ffffff;
+            background: none;
+        }
+        .note-line.dots-2::after {
+            content: '·';
+            position: absolute;
+            top: -7.2px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 9.5px;
+            line-height: 1;
+            color: #ffffff;
+            background: none;
+        }
+        .empty-preview { color: #ffffff; text-align: center; padding: 30px 0; font-size: 14px; }
+        .page-indicator {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            font-size: 9px;
+            font-weight: 500;
+            color: #f2f2f2;
+            opacity: 1;
+            padding: 6px 0 10px;
+            border-radius: 6px;
+            flex-shrink: 0;
+            text-shadow: 1px 0 0 #1a1a1a, -1px 0 0 #1a1a1a, 0 1px 0 #1a1a1a, 0 -1px 0 #1a1a1a, 0.9239px 0.3827px 0 #1a1a1a, 0.9239px -0.3827px 0 #1a1a1a, -0.9239px 0.3827px 0 #1a1a1a, -0.9239px -0.3827px 0 #1a1a1a, 0.7071px 0.7071px 0 #1a1a1a, 0.7071px -0.7071px 0 #1a1a1a, -0.7071px 0.7071px 0 #1a1a1a, -0.7071px -0.7071px 0 #1a1a1a, 0.3827px 0.9239px 0 #1a1a1a, 0.3827px -0.9239px 0 #1a1a1a, -0.3827px 0.9239px 0 #1a1a1a, -0.3827px -0.9239px 0 #1a1a1a;
+        }
+        .page-nav-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            user-select: none;
+            font-size: 14.4px;
+            line-height: 1;
+            color: #ffffff;
+            background: transparent;
+            border: none;
+            padding: 1px 7px;
+            border-radius: 4px;
+            margin: 0;
+            position: relative;
+            top: -1px;
+        }
+        .page-nav-btn:hover {
+            opacity: 0.55;
+            background: rgba(255, 255, 255, 0.08);
+        }
+        .page-nav-icon {
+            display: inline-block;
+            line-height: 1;
+            transform: translateY(-1.75px);
+        }
+        .measure-row.last-row { margin-bottom: 0; }
+        @media print {
+            .page-nav-btn { display: none !important; }
+        }
+
+        .btn { 
+            padding: 5px 14px; 
+            border: none; 
+            border-radius: 6px; 
+            font-weight: 600; 
+            font-size: 12px; 
+            line-height: 1.2;
+            cursor: pointer; 
+            transition: 0.2s; 
+            white-space: nowrap;
+        }
+        .btn-primary { background: #3182ce; color: #fff; }
+        .btn-primary:hover { background: #2b6cb0; }
+        .btn-success { background: #38a169; color: #fff; }
+        .btn-success:hover { background: #2f855a; }
+        .btn-danger { background: #e53e3e; color: #fff; }
+        .btn-danger:hover { background: #c53030; }
+        .reset-bg-text { display: inline-block; transform: translateY(0.5px); }
+        .clear-all-text { display: inline-block; transform: translateY(0.5px); }
+        .clear-trash-icon { display: inline-block; transform: translateY(0.5px); }
+        .btn-outline { background: transparent; border: 2px solid #cbd5e0; }
+        .btn-outline:hover { background: #f7fafc; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .status-msg { 
+            margin-top: 6px; 
+            padding: 6px 12px; 
+            border-radius: 6px; 
+            display: none; 
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+        .status-msg.success { display: block; background: #c6f6d5; color: #22543d; }
+        .status-msg.error { display: block; background: #fed7d7; color: #9b2c2c; }
+        .status-msg.info { display: block; background: #bee3f8; color: #2a4365; }
+
+        .btn-group { display: flex; gap: 6px; flex-shrink: 0; margin-bottom: 6px; }
+        .btn-group .btn { flex: 1; font-size: 11px; padding: 4px 10px; }
+
+        /* 无响应式，所有尺寸固定 */
+    </style>
+</head>
+<body>
+<div class="container" id="mainContainer">
+    <div class="header">
+        <h1>🎵 琴谱格式转换工具</h1>
+        <div class="header-actions">
+            <label class="format-option pdf-opt">
+                <input type="radio" name="exportFormat" value="pdf" checked="">
+                <span>PDF</span>
+            </label>
+            <label class="format-option txt-opt">
+                <input type="radio" name="exportFormat" value="txt">
+                <span>TXT</span>
+            </label>
+            <label class="format-option mid-opt">
+                <input type="radio" name="exportFormat" value="mid">
+                <span>MID</span>
+            </label>
+            <button class="btn btn-success" id="exportSelectedBtn">单个导出</button>
+            <button class="btn btn-primary" id="exportAllBtn">全部导出</button>
+        </div>
+    </div>
+    <div class="main-layout">
+        <!-- 左侧 -->
+        <div class="left-panel">
+            <div class="upload-area" id="dropZone">
+                <p><span class="upload-icon">📤</span> 导入smc文件</p>
+                <input type="file" id="fileInput" multiple="" accept=".smc">
+            </div>
+            <div class="upload-area" id="dropZoneBg">
+                <p>🖼️ 设置背景图</p>
+                <input type="file" id="fileInputBg" multiple="" accept="image/*">
+            </div>
+            <div class="bg-slider">
+                <label>亮度</label>
+                <input type="range" id="bgBrightnessSlider" min="0" max="100" value="50">
+            </div>
+            <div class="bg-slider pos-slider">
+                <label>位置</label>
+                <input type="range" id="bgPosSlider" min="0" max="100" value="50">
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-outline" id="clearBgBtn"><span class="reset-bg-text">移除背景</span></button>
+                <button class="btn btn-danger" id="clearAllBtn"><span class="clear-trash-icon">🗑️</span> <span class="clear-all-text">清空</span></button>
+            </div>
+            <div id="fileList" class="file-list"></div>
+            <div id="statusMsg" class="status-msg"></div>
+        </div>
+
+        <!-- 右侧 -->
+        <div class="right-panel">
+            <div class="preview-box" id="previewBox">
+                <div class="empty-preview">请先导入smc文件</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ============================================================
+    //  0. 固定容器尺寸：初始化时根据屏幕尺寸计算固定像素
+    // ============================================================
+    (function fixContainerSize() {
+        const container = document.getElementById('mainContainer');
+        if (!container) return;
+        const w = 1265;
+        const h = 847;
+        // 宽度比例 0.5，高度比例 0.7
+        const width = Math.round(w * 0.5);
+        const height = Math.round(h * 0.7);
+        container.style.width = width + 'px';
+        container.style.height = height + 'px';
+        container.style.minWidth = width + 'px';
+        container.style.maxWidth = width + 'px';
+        container.style.minHeight = height + 'px';
+        container.style.maxHeight = height + 'px';
+    })();
+
+    // ============================================================
+    //  1. MIDI 核心 (完全不变)
+    // ============================================================
+    function toVLV(value) {
+        const bytes = [];
+        bytes.push(value & 0x7F);
+        value >>= 7;
+        while (value > 0) {
+            bytes.push((value & 0x7F) | 0x80);
+            value >>= 7;
+        }
+        return bytes.reverse();
+    }
+
+    class MidiGenerator {
+        constructor(ppq = 480) {
+            this.ppq = ppq;
+            this.events = [];
+            this.tempo = 120;
+            this.timeSignature = [4, 4];
+            this.title = '';
+        }
+        setTempo(bpm) { this.tempo = Math.round(bpm); }
+        setTimeSignature(n, d) { this.timeSignature = [n, d]; }
+        setTitle(title) { this.title = title.trim(); }
+        addEvent(delta, type, data) { this.events.push({ delta, type, data }); }
+        addChord(channel, notes, velocity, startDelta, durationTicks) {
+            if (notes.length === 0) return;
+            this.addEvent(startDelta, 0x90 + channel, [notes[0], velocity]);
+            for (let i = 1; i < notes.length; i++) this.addEvent(0, 0x90 + channel, [notes[i], velocity]);
+            this.addEvent(durationTicks, 0x80 + channel, [notes[0], velocity]);
+            for (let i = 1; i < notes.length; i++) this.addEvent(0, 0x80 + channel, [notes[i], velocity]);
+        }
+        finishTrack() { this.addEvent(0, 0xFF, [0x2F, 0x00]); }
+        generate() {
+            const trackData = [];
+            const tempoMicro = Math.round(60000000 / this.tempo);
+            const tempoBytes = [(tempoMicro >> 16) & 0xFF, (tempoMicro >> 8) & 0xFF, tempoMicro & 0xFF];
+            trackData.push(...toVLV(0), 0xFF, 0x51, 0x03, ...tempoBytes);
+            const [nn, dd] = this.timeSignature;
+            const ddPow = Math.log2(dd);
+            trackData.push(...toVLV(0), 0xFF, 0x58, 0x04, nn, ddPow, 24, 8);
+            if (this.title) {
+                const titleBytes = new TextEncoder().encode(this.title);
+                trackData.push(...toVLV(0), 0xFF, 0x03, titleBytes.length, ...titleBytes);
+            }
+            const trackNameBytes = [0x31];
+            trackData.push(...toVLV(0), 0xFF, 0x04, trackNameBytes.length, ...trackNameBytes);
+            for (const ev of this.events) {
+                trackData.push(...toVLV(ev.delta));
+                if (ev.type >= 0x80 && ev.type < 0xF0) trackData.push(ev.type, ...ev.data);
+                else if (ev.type === 0xFF) { const [mt, ...r] = ev.data; trackData.push(0xFF, mt, r.length, ...r); }
+            }
+            const trackChunk = new Uint8Array(4 + 4 + trackData.length);
+            const view = new DataView(trackChunk.buffer);
+            view.setUint32(0, 0x4D54726B);
+            view.setUint32(4, trackData.length);
+            trackChunk.set(new Uint8Array(trackData), 8);
+            const headerChunk = new Uint8Array(4 + 4 + 6);
+            const hView = new DataView(headerChunk.buffer);
+            hView.setUint32(0, 0x4D546864);
+            hView.setUint32(4, 6);
+            hView.setUint16(8, 0);
+            hView.setUint16(10, 1);
+            hView.setUint16(12, this.ppq);
+            const result = new Uint8Array(headerChunk.length + trackChunk.length);
+            result.set(headerChunk, 0);
+            result.set(trackChunk, headerChunk.length);
+            return result;
+        }
+    }
+
+    function parseCustomFormat(text) {
+        const titleMatch = text.match(/曲名:\[([^\]]*)\]/);
+        const tempoMatch = text.match(/速度:\[([^\]]*)\]/);
+        const timeSigMatch = text.match(/节拍:\[([^\]]*)\]/);
+        const scoreMatch = text.match(/曲谱:\[([^\]]*)\]/);
+        const title = titleMatch ? titleMatch[1].trim() : '';
+        const tempo = tempoMatch ? parseInt(tempoMatch[1]) : 120;
+        const timeSigStr = timeSigMatch ? timeSigMatch[1].trim() : '4/4';
+        const scoreStr = scoreMatch ? scoreMatch[1].trim() : '';
+        let timeSig = [4, 4];
+        if (timeSigStr) {
+            const parts = timeSigStr.split('/');
+            if (parts.length === 2) {
+                const n = parseInt(parts[0]), d = parseInt(parts[1]);
+                if (!isNaN(n) && !isNaN(d) && d > 0) timeSig = [n, d];
+            }
+        }
+        const tokens = scoreStr.split(/\s+/).filter(t => t.length > 0);
+        const PPQ = 480, durationTicks = PPQ / 2;  // 默认时值改为二分音符
+
+        // 提取调性并计算根音
+        const keyMatch = text.match(/调性:\[([^\]]*)\]/);
+        let keyName = 'Ab';
+        if (keyMatch) {
+            let raw = keyMatch[1].trim();
+            raw = raw.replace(/\(.*\)/, '').trim();
+            if (raw) keyName = raw;
+        }
+        const difficultyMatch = text.match(/难度:\[([^\]]*)\]/);
+        const difficulty = difficultyMatch ? difficultyMatch[1].trim() : '';
+        const keyMap = {
+            'C': 60, 'Db': 61, 'D': 62, 'Eb': 63, 'E': 64,
+            'F': 65, 'Gb': 66, 'G': 67, 'Ab': 68, 'A': 69,
+            'Bb': 70, 'B': 71
+        };
+        const rootNote = keyMap[keyName] || 68;
+        const offsets = [0, 2, 4, 5, 7, 9, 11];
+
+        // 构建动态 noteMap
+        const noteMap = {};
+        const lowChars = ['D','R','M','F','S','L','X'];
+        const midChars = ['1','2','3','4','5','6','7'];
+        lowChars.forEach((ch, idx) => {
+            noteMap[ch] = rootNote + offsets[idx];
+        });
+        midChars.forEach((ch, idx) => {
+            noteMap[ch] = rootNote + 12 + offsets[idx];
+        });
+        noteMap['8'] = rootNote + 24;
+
+        const displayMap = {
+            'D': '1', 'R': '2', 'M': '3', 'F': '4', 'S': '5', 'L': '6', 'X': '7',
+            '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7',
+            '8': '1'
+        };
+        function getDotClass(ch) {
+            const upper = ch.toUpperCase();
+            if ('DRMFSLX'.includes(upper)) return 0;
+            if ('1234567'.includes(upper)) return 1;
+            if (upper === '8') return 2;
+            return 0;
+        }
+
+        const groups = [];
+        for (let token of tokens) {
+            for (let i = 0; i < token.length; i += 4) {
+                const group = token.substring(i, i + 4);
+                const chars = group.substring(0, 3).split('');
+                while (chars.length < 3) chars.push('0');
+                const displayNames = [];
+                const dotClasses = [];
+                const midiNotes = [];
+                for (let ch of chars) {
+                    if (ch === '0' || ch === '<' || ch === '>') { 
+                        displayNames.push(''); 
+                        dotClasses.push(0);
+                        midiNotes.push(null); 
+                    } else { 
+                        const nn = noteMap[ch.toUpperCase()]; 
+                        if (nn) { 
+                            const disp = displayMap[ch.toUpperCase()] || ch;
+                            displayNames.push(disp);
+                            dotClasses.push(getDotClass(ch));
+                            midiNotes.push(nn); 
+                        } else { 
+                            displayNames.push('?'); 
+                            dotClasses.push(0);
+                            midiNotes.push(null); 
+                        } 
+                    }
+                }
+                const validNotes = midiNotes.filter(n => n !== null);
+                groups.push({ 
+                    displayNames, 
+                    dotClasses,
+                    midiNotes, 
+                    validNotes, 
+                    durationTicks, 
+                    raw: group 
+                });
+            }
+        }
+        return { title, tempo, timeSig, groups, keyName, difficulty };
+    }
+
+    function convertToMidi(text) {
+        const parsed = parseCustomFormat(text);
+        const { title, tempo, timeSig, groups } = parsed;
+        if (!groups || groups.length === 0) return { error: '未检测到曲谱数据' };
+        let trimmed = groups.slice();
+        while (trimmed.length > 0 && trimmed[trimmed.length - 1].validNotes.length === 0) trimmed.pop();
+        if (trimmed.length === 0) return { error: '去除尾部空白后无有效音符' };
+        const PPQ = 480, VEL = 90;
+        const gen = new MidiGenerator(PPQ);
+        gen.setTempo(tempo);
+        gen.setTimeSignature(timeSig[0], timeSig[1]);
+        gen.setTitle(title);
+        let absTime = 0, lastEvent = 0;
+        for (const g of trimmed) {
+            if (g.validNotes.length === 0) { absTime += g.durationTicks; continue; }
+            const startDelta = absTime - lastEvent;
+            gen.addChord(0, g.validNotes, VEL, startDelta, g.durationTicks);
+            lastEvent = absTime + g.durationTicks;
+            absTime += g.durationTicks;
+        }
+        gen.addEvent(absTime - lastEvent, 0xFF, [0x2F, 0x00]);
+        return { midiData: gen.generate(), title };
+    }
+
+    function convertToTxt(text) {
+        // 头部参数
+        const tempoMatch = text.match(/速度:\[([^\]]*)\]/);
+        const tempo = tempoMatch ? parseInt(tempoMatch[1]) : 120;
+        const timeSigMatch = text.match(/节拍:\[([^\]]*)\]/);
+        let timeSig = [4, 4];
+        if (timeSigMatch) {
+            const parts = timeSigMatch[1].trim().split('/');
+            if (parts.length === 2) {
+                const n = parseInt(parts[0]), d = parseInt(parts[1]);
+                if (!isNaN(n) && !isNaN(d) && d > 0) timeSig = [n, d];
+            }
+        }
+        // 调性对照：C Db D Eb E F Gb G Ab A Bb B -> 0-11
+        const keyMatch = text.match(/调性:\[([^\]]*)\]/);
+        let keyName = 'Ab';
+        if (keyMatch) {
+            const raw = keyMatch[1].trim().replace(/\(.*\)/, '').trim();
+            if (raw) keyName = raw;
+        }
+        const keyMap = { 'C':0,'Db':1,'D':2,'Eb':3,'E':4,'F':5,'Gb':6,'G':7,'Ab':8,'A':9,'Bb':10,'B':11 };
+        const keyNum = keyMap[keyName] !== undefined ? keyMap[keyName] : 8;
+        const scoreMatch = text.match(/曲谱:\[([^\]]*)\]/);
+        const scoreStr = scoreMatch ? scoreMatch[1].trim() : '';
+
+        // 音符对照：DRMFSLX12345678 -> A1A2A3A4A5B1B2B3B4B5C1C2C3C4C5
+        const noteMap = {
+            'D':'A1','R':'A2','M':'A3','F':'A4','S':'A5',
+            'L':'B1','X':'B2','1':'B3','2':'B4','3':'B5',
+            '4':'C1','5':'C2','6':'C3','7':'C4','8':'C5'
+        };
+
+        // 切分为 4 字符时值组
+        const tokens = scoreStr.split(/\s+/).filter(t => t.length > 0);
+        const groups = [];
+        for (const token of tokens) {
+            for (let i = 0; i < token.length; i += 4) {
+                groups.push(token.substring(i, i + 4));
+            }
+        }
+
+        // 自适应1：每第8个时值第4字符为 '<' 时，该小节为6时值，删除最后两个时值
+        for (let i = groups.length - 8; i >= 0; i -= 8) {
+            const g = groups[i + 7];
+            if (g && g.length >= 4 && g[3] === '<') {
+                groups.splice(i + 6, 2);
+            }
+        }
+
+        // 转换为 Sky 音符并排序（A1..C5 音高升序）
+        const parts = [];
+        for (const g of groups) {
+            const notes = [];
+            for (const ch of g.substring(0, 3)) {
+                if (ch === '0' || ch === '<' || ch === '>') continue;
+                const nn = noteMap[ch.toUpperCase()];
+                if (nn) notes.push(nn);
+            }
+            if (notes.length === 0) {
+                parts.push('.');
+            } else {
+                notes.sort((a, b) => {
+                    if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
+                    return parseInt(a[1]) - parseInt(b[1]);
+                });
+                parts.push(notes.join(''));
+            }
+        }
+
+        // 自适应2：舍去结尾的 '.'
+        while (parts.length > 0 && parts[parts.length - 1] === '.') parts.pop();
+
+        const line1 = '<DontCopyThisLine> ' + (tempo * 2) + ' ' + keyNum + ' ' + (timeSig[0] * 4) + ' Unknown Unknown';
+        const line2 = parts.join(' ') + ' ';
+        return line1 + '\n' + line2 + '\n';
+    }
+
+    // ============================================================
+    //  2. UI
+    // ============================================================
+    const fileInput = document.getElementById('fileInput');
+    const dropZone = document.getElementById('dropZone');
+    const fileListDiv = document.getElementById('fileList');
+    const previewBox = document.getElementById('previewBox');
+    const exportSelectedBtn = document.getElementById('exportSelectedBtn');
+    const exportAllBtn = document.getElementById('exportAllBtn');
+    const clearAllBtn = document.getElementById('clearAllBtn');
+    const clearBgBtn = document.getElementById('clearBgBtn');
+    const statusMsg = document.getElementById('statusMsg');
+
+    let files = [];
+    let selectedId = null;
+    let idCounter = 0;
+    let currentPage = 1;
+    let currentParsed = null;
+    let fixedPrevLeft = null;
+    let fixedNextRight = null;
+    let fixedPrevTop = null;
+    let fixedNextTop = null;
+
+    function showStatus(msg, type = 'info') {
+        statusMsg.className = 'status-msg ' + type;
+        statusMsg.textContent = msg;
+        statusMsg.style.display = 'block';
+        clearTimeout(window._statusTimer);
+        window._statusTimer = setTimeout(() => { statusMsg.style.display = 'none'; }, 4000);
+    }
+
+    function renderFileList() {
+        if (files.length === 0) {
+            fileListDiv.innerHTML = '<p style="color:#a0aec0;text-align:center;padding:10px;font-size:12px;">暂无文件</p>';
+            if (!selectedId) previewBox.innerHTML = '<div class="empty-preview">请先导入smc文件</div>';
+            return;
+        }
+        let html = '';
+        for (const f of files) {
+            const active = f.id === selectedId ? 'active' : '';
+            // 只显示文件名和删除按钮，不显示文件大小
+            html += `
+                <div class="file-item ${active}" data-id="${f.id}">
+                    <span class="name" title="${f.name}">${f.name.replace(/\.smc$/i, '')}</span>
+                    <button class="remove" data-id="${f.id}">✕</button>
+                </div>
+            `;
+        }
+        fileListDiv.innerHTML = html;
+        document.querySelectorAll('.file-item').forEach(el => {
+            el.addEventListener('click', function(e) {
+                if (e.target.classList.contains('remove')) return;
+                const id = parseInt(this.dataset.id);
+                selectFile(id);
+            });
+        });
+        document.querySelectorAll('.file-item .remove').forEach(btn => {
+            btn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                const id = parseInt(this.dataset.id);
+                const idx = files.findIndex(f => f.id === id);
+                if (idx >= 0) {
+                    files.splice(idx, 1);
+                    if (selectedId === id) { selectedId = files.length > 0 ? files[0].id : null; }
+                    renderFileList();
+                    if (selectedId) selectFile(selectedId);
+                    else previewBox.innerHTML = '<div class="empty-preview">请先导入smc文件</div>';
+                }
+            });
+        });
+        if (selectedId && !files.find(f => f.id === selectedId)) {
+            selectedId = files.length > 0 ? files[0].id : null;
+            renderFileList();
+            if (selectedId) selectFile(selectedId);
+        }
+    }
+
+    // ===== 预览逻辑 =====
+    function selectFile(id) {
+        selectedId = id;
+        renderFileList();
+        const f = files.find(x => x.id === id);
+        if (!f) { previewBox.innerHTML = '<div class="empty-preview">文件不存在</div>'; return; }
+        currentParsed = parseCustomFormat(f.content);
+        currentPage = 1;
+        renderPreview();
+    }
+
+    function renderPreview() {
+        const parsed = currentParsed;
+        if (!parsed) return;
+        const { title, tempo, timeSig, groups, keyName, difficulty } = parsed;
+        let html = '';
+        html += `<div class="preview-title">《${title || '(未设置)'}》</div>`;
+        html += `<div class="preview-meta">`;
+        html += `<div class="preview-params">♩= ${tempo}&nbsp;&nbsp;&nbsp;${timeSig[0]}/${timeSig[1]}&nbsp;&nbsp;&nbsp;${keyName || '(未设置)'}</div>`;
+        if (difficulty) html += `<div class="preview-difficulty">${difficulty}&thinsp;◈</div>`;
+        html += `</div>`;
+        let totalPages = 1;
+        if (!groups || groups.length === 0) {
+            html += `<div style="color:#a0aec0;padding:6px 0;font-size:12px;">未检测到音符数据</div>`;
+        } else {
+            const total = groups.length;
+            const BEATS_PER_MEASURE = 8;
+            const MEASURES_PER_ROW = 4;
+            const MAX_ROWS_PER_PAGE = 8;
+            const totalMeasures = Math.ceil(total / BEATS_PER_MEASURE);
+            const totalRowsAll = Math.ceil(totalMeasures / MEASURES_PER_ROW);
+            totalPages = Math.max(1, Math.ceil(totalRowsAll / MAX_ROWS_PER_PAGE));
+            if (currentPage > totalPages) currentPage = totalPages;
+
+            const startRow = (currentPage - 1) * MAX_ROWS_PER_PAGE;
+            const endRow = Math.min(startRow + MAX_ROWS_PER_PAGE, totalRowsAll);
+
+            for (let rowIdx = startRow; rowIdx < endRow; rowIdx++) {
+                html += `<div class="measure-row${rowIdx === endRow - 1 ? ' last-row' : ''}">`;
+                for (let mIdx = 0; mIdx < MEASURES_PER_ROW; mIdx++) {
+                    const globalMeasureIdx = rowIdx * MEASURES_PER_ROW + mIdx;
+                    const isEmpty = globalMeasureIdx >= totalMeasures;
+
+                    if (isEmpty) {
+                        html += `<div class="measure-group empty"></div>`;
+                        continue;
+                    }
+
+                    const startIdx = globalMeasureIdx * BEATS_PER_MEASURE;
+                    const endIdx = Math.min(startIdx + BEATS_PER_MEASURE, total);
+                    const measureGroups = groups.slice(startIdx, endIdx);
+
+                    const lastGroup = measureGroups[measureGroups.length - 1];
+                    const lastRaw = lastGroup ? lastGroup.raw : '';
+                    const fourthChar = lastRaw.length >= 4 ? lastRaw[3] : '';
+                    const showAll8 = (fourthChar === '>');
+
+                    let displayGroups = [];
+                    if (showAll8) {
+                        displayGroups = measureGroups.slice();
+                    } else {
+                        displayGroups = measureGroups.slice(0, 6);
+                    }
+
+                    const displayCount = showAll8 ? 8 : 6;
+                    while (displayGroups.length < displayCount) {
+                        displayGroups.push({ displayNames: ['','',''], dotClasses: [0,0,0], raw: '', validNotes: [] });
+                    }
+
+                    html += `<div class="measure-group">`;
+                    for (let i = 0; i < displayGroups.length; i++) {
+                        const g = displayGroups[i];
+                        const d1 = g.displayNames ? g.displayNames[0] : '';
+                        const d2 = g.displayNames ? g.displayNames[1] : '';
+                        const d3 = g.displayNames ? g.displayNames[2] : '';
+                        const dc1 = g.dotClasses ? g.dotClasses[0] : 0;
+                        const dc2 = g.dotClasses ? g.dotClasses[1] : 0;
+                        const dc3 = g.dotClasses ? g.dotClasses[2] : 0;
+                        const cls1 = d1 ? 'note-line' + (dc1 === 1 ? ' dots-1' : '') + (dc1 === 2 ? ' dots-2' : '') : 'note-line rest';
+                        const cls2 = d2 ? 'note-line' + (dc2 === 1 ? ' dots-1' : '') + (dc2 === 2 ? ' dots-2' : '') : 'note-line rest';
+                        const cls3 = d3 ? 'note-line' + (dc3 === 1 ? ' dots-1' : '') + (dc3 === 2 ? ' dots-2' : '') : 'note-line rest';
+                        html += `
+                            <div class="beat-block">
+                                <div class="${cls1}">${d1}</div>
+                                <div class="${cls2}">${d2}</div>
+                                <div class="${cls3}">${d3}</div>
+                            </div>
+                        `;
+                    }
+                    html += `</div>`;
+                }
+                html += `</div>`;
+            }
+        }
+        html += `<div class="page-indicator"><span class="page-nav-btn" id="prevPageBtn"><span class="page-nav-icon">‹</span></span><span class="page-indicator-text">${currentPage} / ${totalPages}</span><span class="page-nav-btn" id="nextPageBtn"><span class="page-nav-icon">›</span></span></div>`;
+        previewBox.innerHTML = html;
+
+        const prevBtn = document.getElementById('prevPageBtn');
+        const nextBtn = document.getElementById('nextPageBtn');
+        if (prevBtn) prevBtn.addEventListener('click', () => {
+            if (currentPage > 1) { currentPage--; renderPreview(); }
+        });
+        if (nextBtn) nextBtn.addEventListener('click', () => {
+            if (currentPage < totalPages) { currentPage++; renderPreview(); }
+        });
+        const indicator = previewBox.querySelector('.page-indicator');
+        if (indicator && prevBtn && nextBtn) {
+            if (fixedPrevLeft === null) {
+                const ir = indicator.getBoundingClientRect();
+                const pr = prevBtn.getBoundingClientRect();
+                const nr = nextBtn.getBoundingClientRect();
+                fixedPrevLeft = pr.left - ir.left;
+                fixedNextRight = ir.right - nr.right;
+                fixedPrevTop = pr.top - ir.top;
+                fixedNextTop = nr.top - ir.top;
+            }
+            prevBtn.style.position = 'absolute';
+            prevBtn.style.left = fixedPrevLeft + 'px';
+            prevBtn.style.top = fixedPrevTop + 'px';
+            nextBtn.style.position = 'absolute';
+            nextBtn.style.right = fixedNextRight + 'px';
+            nextBtn.style.top = fixedNextTop + 'px';
+        }
+    }
+
+    // 上传事件
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.borderColor = '#3182ce'; });
+    dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = '#cbd5e0'; });
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = '#cbd5e0';
+        if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length) { handleFiles(e.target.files); }
+        fileInput.value = '';
+    });
+
+    // 背景图上传事件
+    const fileInputBg = document.getElementById('fileInputBg');
+    const dropZoneBg = document.getElementById('dropZoneBg');
+    let bgImages = [];
+
+    dropZoneBg.addEventListener('click', () => fileInputBg.click());
+    dropZoneBg.addEventListener('dragover', (e) => { e.preventDefault(); dropZoneBg.style.borderColor = '#3182ce'; });
+    dropZoneBg.addEventListener('dragleave', () => { dropZoneBg.style.borderColor = '#cbd5e0'; });
+    dropZoneBg.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZoneBg.style.borderColor = '#cbd5e0';
+        if (e.dataTransfer.files.length) handleBgFiles(e.dataTransfer.files);
+    });
+    fileInputBg.addEventListener('change', (e) => {
+        if (e.target.files.length) { handleBgFiles(e.target.files); }
+        fileInputBg.value = '';
+    });
+
+    function handleBgFiles(selectedFiles) {
+        const promises = [];
+        for (const file of selectedFiles) {
+            if (!file.type.startsWith('image/')) { showStatus(`⚠️ ${file.name} 不是图片`, 'error'); continue; }
+            const reader = new FileReader();
+            const p = new Promise((resolve, reject) => {
+                reader.onload = (e) => resolve({ name: file.name, dataUrl: e.target.result });
+                reader.onerror = reject;
+            });
+            reader.readAsDataURL(file);
+            promises.push(p);
+        }
+        Promise.all(promises).then(results => {
+            for (const r of results) {
+                bgImages.push({ name: r.name, dataUrl: r.dataUrl });
+            }
+            showStatus(`✅ 背景图加载 ${results.length} 个`, 'success');
+            if (results.length > 0) {
+                applyBgImage(results[results.length - 1].dataUrl);
+            }
+        }).catch(err => showStatus('❌ 背景图读取失败: ' + err.message, 'error'));
+    }
+
+    const bgBrightnessSlider = document.getElementById('bgBrightnessSlider');
+    const bgPosSlider = document.getElementById('bgPosSlider');
+    let bgImageAspect = null;
+
+    function updateSliderFill(slider) {
+        const v = parseInt(slider.value, 10);
+        slider.style.background = `linear-gradient(to right, #737373 0%, #737373 ${v}%, #d9d9d9 ${v}%, #d9d9d9 100%)`;
+    }
+
+    function applyBrightness() {
+        const v = parseInt(bgBrightnessSlider.value, 10);
+        const brightness = v;
+        previewBox.style.setProperty('--bg-dim', String(1 - brightness / 100));
+        updateSliderFill(bgBrightnessSlider);
+    }
+
+    bgBrightnessSlider.addEventListener('input', () => {
+        applyBrightness();
+    });
+    bgPosSlider.addEventListener('input', () => {
+        applyBgPosition();
+        updateSliderFill(bgPosSlider);
+    });
+
+    updateSliderFill(bgBrightnessSlider);
+    updateSliderFill(bgPosSlider);
+    applyBrightness();
+
+    function applyBgPosition() {
+        const v = parseInt(bgPosSlider.value, 10);
+        const pageAspect = previewBox.clientWidth / previewBox.clientHeight;
+        let x = '50%', y = '50%';
+        if (bgImageAspect !== null) {
+            if (bgImageAspect < pageAspect) {
+                y = v + '%';
+            } else {
+                x = (100 - v) + '%';
+            }
+        }
+        previewBox.style.backgroundPosition = x + ' ' + y;
+    }
+
+    function applyBgImage(dataUrl) {
+        const img = new Image();
+        img.onload = () => {
+            bgImageAspect = img.width / img.height;
+            previewBox.style.backgroundImage = 'url(' + dataUrl + ')';
+            previewBox.style.backgroundSize = 'cover';
+            previewBox.style.backgroundPosition = '50% 50%';
+            previewBox.style.backgroundRepeat = 'no-repeat';
+            applyBgPosition();
+        };
+        img.src = dataUrl;
+    }
+
+    function handleFiles(selectedFiles) {
+        const promises = [];
+        for (const file of selectedFiles) {
+            if (!file.name.toLowerCase().endsWith('.smc')) { showStatus(`⚠️ ${file.name} 不是 .smc`, 'error'); continue; }
+            const reader = new FileReader();
+            const p = new Promise((resolve, reject) => {
+                reader.onload = (e) => resolve({ name: file.name, content: e.target.result });
+                reader.onerror = reject;
+            });
+            reader.readAsText(file, 'UTF-8');
+            promises.push(p);
+        }
+        Promise.all(promises).then(results => {
+            for (const r of results) {
+                if (r.content.trim().length > 0) {
+                    files.push({ id: ++idCounter, name: r.name, content: r.content });
+                }
+            }
+            renderFileList();
+            if (files.length > 0) {
+                if (!selectedId || !files.find(f => f.id === selectedId)) {
+                    selectedId = files[0].id;
+                }
+                selectFile(selectedId);
+            }
+            showStatus(`✅ 加载 ${results.length} 个文件`, 'success');
+        }).catch(err => showStatus('❌ 读取失败: ' + err.message, 'error'));
+    }
+
+    // 清除背景
+    clearBgBtn.addEventListener('click', () => {
+        previewBox.style.backgroundImage = '';
+        previewBox.style.backgroundPosition = '50% 50%';
+        previewBox.style.removeProperty('--bg-dim');
+        bgImages = [];
+        bgImageAspect = null;
+        bgBrightnessSlider.value = 50;
+        bgPosSlider.value = 50;
+        updateSliderFill(bgBrightnessSlider);
+        updateSliderFill(bgPosSlider);
+        showStatus('🗑️ 背景已清除', 'info');
+    });
+
+    // 清空
+    clearAllBtn.addEventListener('click', () => {
+        files = [];
+        selectedId = null;
+        renderFileList();
+        previewBox.innerHTML = '<div class="empty-preview">请先导入smc文件</div>';
+        showStatus('🗑️ 已清空', 'info');
+    });
+
+    // 导出选中的
+    function downloadMidi(data, filename) {
+        const blob = new Blob([data], { type: 'audio/midi' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 200);
+    }
+
+    // ===== PDF 导出（html2canvas 原理：后台模拟画布截取 preview-box） =====
+    function loadScript(src) {
+        return new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = src;
+            script.onload = resolve;
+            script.onerror = reject;
+            document.head.appendChild(script);
+        });
+    }
+
+    function getBaseName(f) {
+        let baseName = f.name.replace(/\.smc$/i, '');
+        const titleMatch = f.content.match(/曲名:\[([^\]]*)\]/);
+        if (titleMatch && titleMatch[1].trim()) {
+            const safe = titleMatch[1].trim().replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_');
+            if (safe) baseName = safe;
+        }
+        return baseName;
+    }
+
+    function downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 200);
+    }
+
+    function computeTotalPages(groups) {
+        if (!groups || groups.length === 0) return 1;
+        const totalMeasures = Math.ceil(groups.length / 8);
+        const totalRowsAll = Math.ceil(totalMeasures / 4);
+        return Math.max(1, Math.ceil(totalRowsAll / 8));
+    }
+
+    async function generatePdf(parsed) {
+        const totalPages = computeTotalPages(parsed.groups);
+        const savedParsed = currentParsed;
+        const savedPage = currentPage;
+        currentParsed = parsed;
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+        try {
+            for (let page = 1; page <= totalPages; page++) {
+                currentPage = page;
+                renderPreview();
+                if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) {} }
+                const canvas = await html2canvas(previewBox, {
+                    scale: 5,
+                    useCORS: true,
+                    backgroundColor: '#000000',
+                    ignoreElements: (el) => el.classList && el.classList.contains('page-nav-btn'),
+                    onclone: (clonedDoc) => {
+                        const box = clonedDoc.getElementById('previewBox');
+                        if (box) box.style.borderRadius = '0';
+                    },
+                    logging: false
+                });
+                const imgData = canvas.toDataURL('image/jpeg', 0.92);
+                if (page > 1) pdf.addPage();
+                pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297);
+            }
+        } finally {
+            currentParsed = savedParsed;
+            currentPage = savedPage;
+            renderPreview();
+        }
+        return pdf;
+    }
+
+    exportSelectedBtn.addEventListener('click', async () => {
+        const selectedFormat = document.querySelector('input[name="exportFormat"]:checked');
+        const format = selectedFormat ? selectedFormat.value : 'mid';
+        if (!selectedId) { showStatus('⚠️ 请先选择一个文件', 'error'); return; }
+        const f = files.find(x => x.id === selectedId);
+        if (!f) { showStatus('⚠️ 文件不存在', 'error'); return; }
+        const baseName = getBaseName(f);
+        if (format === 'pdf') {
+            try {
+                showStatus('⏳ 正在加载 PDF 组件...', 'info');
+                if (typeof html2canvas === 'undefined') await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+                if (typeof window.jspdf === 'undefined') await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+                showStatus('⏳ 正在生成 PDF...', 'info');
+                const parsed = parseCustomFormat(f.content);
+                const pdf = await generatePdf(parsed);
+                pdf.save(baseName + '.pdf');
+                showStatus(`✅ 已导出: ${baseName}.pdf`, 'success');
+            } catch (e) {
+                showStatus('❌ PDF 导出失败: ' + e.message, 'error');
+            }
+            return;
+        }
+        if (format === 'txt') {
+            const txtContent = convertToTxt(f.content);
+            downloadBlob(new Blob([txtContent], { type: 'text/plain;charset=utf-8' }), baseName + '.txt');
+            showStatus(`✅ 已导出: ${baseName}.txt`, 'success');
+            return;
+        }
+        const result = convertToMidi(f.content);
+        if (result.error) { showStatus('❌ ' + result.error, 'error'); return; }
+        downloadMidi(result.midiData, baseName + '.mid');
+        showStatus(`✅ 已导出: ${baseName}.mid`, 'success');
+    });
+
+    // 导出全部 (ZIP)
+    exportAllBtn.addEventListener('click', async () => {
+        const selectedFormat = document.querySelector('input[name="exportFormat"]:checked');
+        const format = selectedFormat ? selectedFormat.value : 'mid';
+        if (files.length === 0) { showStatus('⚠️ 请先添加文件', 'error'); return; }
+        if (typeof JSZip === 'undefined') {
+            showStatus('⏳ 正在加载 JSZip...', 'info');
+            await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
+        }
+        if (format === 'pdf') {
+            try {
+                showStatus('⏳ 正在加载 PDF 组件...', 'info');
+                if (typeof html2canvas === 'undefined') await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+                if (typeof window.jspdf === 'undefined') await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+            } catch (e) {
+                showStatus('❌ 组件加载失败: ' + e.message, 'error');
+                return;
+            }
+        }
+        const zip = new JSZip();
+        let success = 0, fail = 0;
+        for (const f of files) {
+            try {
+                const baseName = getBaseName(f);
+                if (format === 'pdf') {
+                    const parsed = parseCustomFormat(f.content);
+                    const pdf = await generatePdf(parsed);
+                    zip.file(baseName + '.pdf', pdf.output('arraybuffer'));
+                } else if (format === 'txt') {
+                    zip.file(baseName + '.txt', convertToTxt(f.content));
+                } else {
+                    const result = convertToMidi(f.content);
+                    if (result.error) { fail++; continue; }
+                    zip.file(baseName + '.mid', result.midiData);
+                }
+                success++;
+            } catch (e) { fail++; }
+        }
+        if (success === 0) { showStatus('❌ 没有文件成功转换', 'error'); return; }
+        try {
+            const blob = await zip.generateAsync({ type: 'blob' });
+            const zipName = format === 'pdf' ? 'pdf_全部.zip' : (format === 'txt' ? 'txt_全部.zip' : 'midi_全部.zip');
+            downloadBlob(blob, zipName);
+            showStatus(`✅ 导出完成！成功 ${success}，失败 ${fail}`, 'success');
+        } catch (e) {
+            showStatus('❌ 打包失败: ' + e.message, 'error');
+        }
+    });
+
+    // 初始
+    renderFileList();
+</script>
+
+</body></html>

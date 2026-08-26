@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>琴谱格式转换工具</title>
+<style>
+  :root {
+    --bg: #f4f5f9;
+    --card: #ffffff;
+    --line: #e3e6ef;
+    --text: #2b2f3a;
+    --muted: #7a8195;
+    --accent: #4a63e7;
+    --green: #22a06b;
+    --red: #e5484d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  }
+  .app {
+    width: fit-content; max-width: 100%; margin: 0 auto;
+    background: var(--card); border-radius: 16px;
+    box-shadow: 0 6px 28px rgba(20, 25, 50, .08);
+    padding: 22px 26px 26px;
+  }
+  header.bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-size: 21px; margin: 0; letter-spacing: .04em; font-weight: 650; }
+  h1 .ico { color: var(--accent); }
+  .bar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  label.radio { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+  button {
+    font: inherit; cursor: pointer; border: 0; border-radius: 8px;
+    padding: 8px 16px; color: #fff; background: var(--accent);
+  }
+  button.green { background: var(--green); }
+  button.ghost { background: #fff; color: var(--text); border: 1px solid var(--line); }
+  button.red { background: var(--red); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* 左右分栏中间有一条分割线 */
+  .layout { display: grid; grid-template-columns: 250px 1px auto; gap: 0; align-items: stretch; }
+  .divider { background: #d7dcea; }
+  .panel { padding-right: 18px; }
+  .preview { padding-left: 18px; }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; gap: 16px; }
+    .divider { display: none; }
+    .panel { padding-right: 0; }
+    .preview { padding-left: 0; }
+  }
+
+  .panel > * + * { margin-top: 12px; }
+  .drop {
+    display: block; text-align: center; padding: 16px;
+    border: 2px dashed #ccd3e6; border-radius: 12px; color: var(--muted);
+    cursor: pointer; transition: .15s;
+  }
+  .drop:hover { border-color: var(--accent); color: var(--accent); }
+  .slider-row { display: grid; grid-template-columns: 42px 1fr; align-items: center; gap: 10px; color: var(--muted); }
+  input[type=range] { width: 100%; }
+  .btn-row { display: flex; gap: 10px; }
+  .btn-row > * { flex: 1; }
+
+  .files { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow: auto; }
+  .file {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 10px; border-radius: 8px; cursor: pointer;
+    background: #eef1fb; border: 1px solid transparent;
+  }
+  .file.on { background: #dce3fd; border-color: var(--accent); }
+  .file .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file .rm {
+    background: var(--red); color: #fff; border-radius: 6px;
+    width: 22px; height: 22px; line-height: 20px; text-align: center; font-size: 13px;
+  }
+
+  /* ---- 谱面预览 ----
+     整块谱面用容器查询单位 cqw 等比缩放：stage 有多宽，字号就按比例走，
+     再用 clamp() 兜住极窄/极宽两端，保证任何宽度下都不挤压、不溢出。 */
+  .stage {
+    border: 1px solid var(--line); border-radius: 12px;
+    background: #1b2030; overflow: hidden;
+    width: fit-content; max-width: 100%; margin: 0 auto;   /* 卡片贴合 A4 页面 */
+  }
+  /* 谱面排版固定为 4 小节/行（属于格式本身，不做重排）。
+     容器窄于 min-width 时不再压缩，改为横向滚动。 */
+  .scroller { overflow-x: auto; overflow-y: hidden; display: flex; justify-content: center; }
+  /* A4 比例（210:297），高度受视口约束 —— 整页始终一屏可见，
+     宽度由比例反推；容器不够宽时退回 100% 并横向滚动。 */
+  .page {
+    position: relative; overflow: hidden;
+    display: flex; flex-direction: column;
+    container-type: inline-size;          /* cqw 以谱面页宽为基准 */
+    aspect-ratio: 210 / 297;
+    /* 页高 = 视口高 − 页面其余部分(约 195px)，页宽再按 A4 反推 */
+    width: clamp(400px, calc((100vh - 195px) * 0.7071), 820px);
+  }
+  .page .bgimg {
+    position: absolute; inset: 0; background-size: cover; background-repeat: no-repeat;
+    z-index: 0;
+  }
+  .page .inner {
+    position: relative; z-index: 1; color: #fff; height: 100%;
+    display: flex; flex-direction: column;
+    padding: 2.6cqw 3cqw 2.4cqw;          /* 底部留白很小，紧邻翻页器 */
+  }
+  .title {
+    text-align: center; font-weight: 600; letter-spacing: .12em;
+    font-size: 3.6cqw;
+    font-family: "Songti SC", "STSong", "Source Han Serif SC", "Noto Serif CJK SC",
+                 Georgia, "Times New Roman", serif;
+    text-shadow: 0 1px 3px rgba(0,0,0,.55);
+  }
+  .meta {
+    display: flex; align-items: baseline; flex-wrap: wrap;
+    gap: 2.2cqw; font-size: 2.1cqw;
+    margin-top: .45em; opacity: .95;
+    font-variant-numeric: tabular-nums; letter-spacing: .03em;
+    text-shadow: 0 1px 2px rgba(0,0,0,.5);
+  }
+  .meta .diff { margin-left: auto; }
+  /* 各行按内容高度排布，用 space-between 均分剩余空间：
+     首行贴着表头、末行贴着页底，段落间距自然收紧。 */
+  .rows {
+    flex: 1; min-height: 0; margin-top: 3cqw;
+    display: flex; flex-direction: column;
+    justify-content: space-between;
+  }
+  .row { display: flex; min-width: 0; }
+  .measure-group {
+    display: flex; flex: 1; min-width: 0;
+    border-right: 1px solid rgba(255,255,255,.5);
+    box-shadow: inset -1px 0 0 rgba(0,0,0,.25);
+    padding-right: .15em;
+  }
+  .measure-group:first-child {
+    border-left: 1px solid rgba(255,255,255,.45); padding-left: .15em;
+  }
+  .beat-block {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .note-line {
+    position: relative; line-height: 1.45;
+    font-family: "Optima", "Palatino", "Palatino Linotype", "Songti SC",
+                 Georgia, "Times New Roman", serif;
+    font-size: 2.25cqw; font-weight: 500;
+    min-height: 1.45em;
+    white-space: nowrap;                  /* 数字不换行 */
+    font-variant-numeric: tabular-nums lining-nums;
+    letter-spacing: .02em;
+    /* 背景图模式下靠投影保持可读 */
+    text-shadow: 0 1px 2px rgba(0,0,0,.65);
+  }
+  .note-line.rest { color: transparent; }
+  /* 简谱八度点：高音点在数字上方，两个点竖直堆叠。用 em 让点随字号缩放 */
+  .note-line.dots-1::before,
+  .note-line.dots-2::before,
+  .note-line.dots-2::after {
+    content: ''; position: absolute; left: 50%;
+    width: .17em; height: .17em; border-radius: 50%;
+    background: currentColor; transform: translateX(-50%);
+  }
+  .note-line.dots-1::before { top: -.02em; }
+  .note-line.dots-2::before { top: -.02em; }
+  .note-line.dots-2::after  { top: -.28em; }
+
+  #sheet { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #sheet[hidden], .empty[hidden] { display: none; }
+  .pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 8px; color: #cfd6ea; font-size: 12px; background: rgba(0,0,0,.25); }
+  .pager button { background: transparent; color: #cfd6ea; padding: 2px 10px; }
+  .empty { color: var(--muted); text-align: center; padding: 80px 20px; }
+
+
+  @media print {
+    body { padding: 0; background: #fff; }
+    .app { box-shadow: none; padding: 0; max-width: none; }
+    header.bar, .panel, .divider, .pager { display: none !important; }
+    .layout { display: block; }
+    .stage { border: 0; border-radius: 0; }
+    .page { aspect-ratio: auto; height: 100vh; page-break-after: always; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <h1><span class="ico">♫</span> 琴谱格式转换工具</h1>
+    <div class="bar-right">
+      <label class="radio"><input type="radio" name="fmt" value="pdf" checked> PDF</label>
+      <label class="radio"><input type="radio" name="fmt" value="mid"> MID</label>
+      <label class="radio"><input type="radio" name="fmt" value="txt"> TXT</label>
+      <button class="green" id="expOne">单个导出</button>
+      <button id="expAll">全部导出</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <div class="panel">
+      <label class="drop" for="txtInput">📥 导入 txt 文件</label>
+      <input type="file" id="txtInput" accept=".txt" multiple hidden>
+
+      <label class="drop" for="bgInput">🖼 设置背景图</label>
+      <input type="file" id="bgInput" accept="image/*" hidden>
+
+      <div class="slider-row"><span>亮度</span><input type="range" id="bright" min="10" max="100" value="70"></div>
+      <div class="slider-row"><span>位置</span><input type="range" id="posY" min="0" max="100" value="50"></div>
+
+      <div class="btn-row">
+        <button class="ghost" id="bgReset">重置背景</button>
+        <button class="red" id="clearAll">🗑 清空</button>
+      </div>
+
+      <div class="files" id="files"></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="preview">
+      <div class="stage">
+       <div class="scroller">
+        <div class="page" id="page">
+          <div class="bgimg" id="bgimg"></div>
+          <div class="inner">
+            <div class="empty" id="empty">导入 txt 文件后在此预览</div>
+            <div id="sheet" hidden>
+              <div class="title" id="pTitle"></div>
+              <div class="meta">
+                <span id="pTempo"></span><span id="pMeter"></span><span id="pKey"></span>
+                <span class="diff" id="pDiff"></span>
+              </div>
+              <div class="rows" id="pRows"></div>
+            </div>
+          </div>
+        </div>
+       </div>
+        <div class="pager">
+          <button id="prev">‹</button><span id="pageNo">0 / 0</span><button id="next">›</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ---------- 字符 → 简谱 映射 ----------
+   已确证：D=1 M=3 F=4 S=5 L=6（本位）  1=1̇（高八度）  8=1̈（高两个八度）
+   外推未确认：R=2 T=7；数字 2–7 = 中音区带一点                        */
+const NOTE_MAP = (() => {
+  const m = {};
+  ['D','R','M','F','S','L','X'].forEach((c, i) => m[c] = { digit: String(i + 1), dots: 0 });
+  for (let d = 1; d <= 7; d++) m[String(d)] = { digit: String(d), dots: 1 };
+  m['8'] = { digit: '1', dots: 2 };
+  return m;
+})();
+const REST = new Set(['0', ' ', '-', '_']);
+
+/* 八度移位记号的处理。
+   作者已确认：(8vb) 仅决定琴谱编辑器里播放演示时是否降八度，
+   不影响导出后的实际音高。故导出一律不移位。
+   若换成需要按记号再移位的谱源，置 true 即可。                        */
+const APPLY_OCTAVE_MARK = false;
+
+/** 八度记号 → 半音位移。8va +12 / 8vb·8ba −12 / 15ma +24 / 15mb·15ba −24 / 22ma +36 / loco 0 */
+function octaveShift(raw) {
+  if (!raw) return 0;
+  const m = /\((\d+)\s*(va|vb|ba|ma|mb)\)/i.exec(raw);
+  if (!m) return 0;                        // 含 (loco) 或无记号 → 不位移
+  const oct = {8: 1, 15: 2, 22: 3}[Number(m[1])];
+  if (!oct) return 0;
+  // 向下的写法：vb（ottava bassa）、mb（quindicesima bassa）、ba（8ba/15ba 的简写）
+  const down = /^(vb|mb|ba)$/i.test(m[2]);
+  return oct * 12 * (down ? -1 : 1);
+}
+
+/** 音名 → 相对 C 的半音数；支持 `1=bA` / `Ab` / `bA` / `A♭` / `Am` / `a小调` */
+function keyToSemitone(raw) {
+  const T = { C:0,'B#':0,Db:1,'C#':1,D:2,Eb:3,'D#':3,E:4,Fb:4,F:5,'E#':5,
+              Gb:6,'F#':6,G:7,Ab:8,'G#':8,A:9,Bb:10,'A#':10,B:11,Cb:11 };
+  if (!raw) return 0;
+  let body = raw.replace(/\(.*?\)/g, '').trim();
+  const explicit1Eq = /^\s*1\s*[=＝]/.test(body);
+  if (explicit1Eq) body = body.replace(/^\s*1\s*[=＝]\s*/, '');
+  const minor = /(m(in(or)?)?|小调|moll)\s*$/i.test(body) && !/^[A-G]?maj/i.test(body);
+  if (minor) body = body.replace(/(m(in(or)?)?|小调|moll)\s*$/i, '').trim();
+  body = body.replace(/(大调|major|maj|dur)\s*$/i, '').trim();
+  let n = body.replace(/♭/g, 'b').replace(/♯/g, '#').replace(/\s+/g, '');
+  if (/^[b#][A-Ga-g]$/.test(n)) n = n[1].toUpperCase() + n[0];
+  else if (n.length) n = n[0].toUpperCase() + n.slice(1);
+  if (!(n in T)) { console.warn(`[调性] "${raw}" 无法识别，按 C 处理`); return 0; }
+  // 小调且无「1=」前缀 → 字段给的是调式主音，换算到关系大调
+  return minor && !explicit1Eq ? (T[n] + 3) % 12 : T[n];
+}
+
+const BEATS_PER_MEASURE = 8, MEASURES_PER_ROW = 4, MAX_ROWS_PER_PAGE = 8;
+const MEASURES_PER_PAGE = MEASURES_PER_ROW * MAX_ROWS_PER_PAGE;
+
+/* ---------- 解析 ---------- */
+function readField(text, label) {
+  const m = text.match(new RegExp(label + ':\\[([^\\]]*)\\]'));
+  return m ? m[1] : '';
+}
+function parseSheet(text, fallbackName) {
+  const body = readField(text, '曲谱');
+  if (!body) throw new Error('未找到 曲谱:[...] 字段');
+  const groups = [];
+  for (let i = 0; i < body.length; i += 4) {
+    const raw = body.slice(i, i + 4).padEnd(4, ' ');
+    const displayNames = [], dotClasses = [], validNotes = [];
+    for (let s = 0; s < 3; s++) {
+      const ch = raw[s];
+      if (REST.has(ch)) { displayNames.push(''); dotClasses.push(0); continue; }
+      const n = NOTE_MAP[ch] || NOTE_MAP[ch.toUpperCase()];
+      if (!n) { displayNames.push('?'); dotClasses.push(0); continue; }
+      displayNames.push(n.digit); dotClasses.push(n.dots);
+      validNotes.push({ slot: s, digit: n.digit, dots: n.dots, index: (+n.digit - 1) + n.dots * 7 });
+    }
+    groups.push({ raw, displayNames, dotClasses, validNotes });
+  }
+  if (groups.length % BEATS_PER_MEASURE !== 0) {
+    console.warn(`时值数 ${groups.length} 不是 ${BEATS_PER_MEASURE} 的倍数，末小节不完整`);
+  }
+  // 每小节第 8 个时值的第 4 字符应为 '<' 或 '>'，其余取值按 4/4 处理并告警
+  const badMeters = [];
+  for (let i = BEATS_PER_MEASURE - 1; i < groups.length; i += BEATS_PER_MEASURE) {
+    const ch = groups[i].raw[3];
+    if (ch !== '<' && ch !== '>') {
+      badMeters.push(`第 ${Math.floor(i / BEATS_PER_MEASURE) + 1} 小节(${JSON.stringify(ch)})`);
+    }
+  }
+  if (badMeters.length) {
+    console.warn(`[拍号] ${badMeters.length} 个小节的末位标记既非 '<' 也非 '>'，按 4/4 保留 8 拍: ` + badMeters.join(', '));
+  }
+  return {
+    name: readField(text, '曲名') || fallbackName,
+    speed: readField(text, '速度') || '120',
+    meter: readField(text, '节拍') || '4/4',
+    key: readField(text, '调性') || 'C',
+    difficulty: readField(text, '难度') || '',
+    groups
+  };
+}
+
+/* ---------- 渲染（严格按作者的分小节/裁拍逻辑） ---------- */
+function buildMeasure(groups, globalMeasureIdx) {
+  const total = groups.length;
+  const startIdx = globalMeasureIdx * BEATS_PER_MEASURE;
+  const endIdx = Math.min(startIdx + BEATS_PER_MEASURE, total);
+  const measureGroups = groups.slice(startIdx, endIdx);
+
+  const lastGroup = measureGroups[measureGroups.length - 1];
+  const lastRaw = lastGroup ? lastGroup.raw : '';
+  const fourthChar = lastRaw.length >= 4 ? lastRaw[3] : '';
+  // 保守处理：只有明确的 '<' 才裁到 6 拍，其余一律保留 8 拍。
+  // 与 textSheetToComposed.js 一致 —— 多留 2 拍比静默删掉 2 拍安全。
+  const showAll8 = (fourthChar !== '<');
+
+  const displayGroups = showAll8 ? measureGroups.slice() : measureGroups.slice(0, 6);
+  const displayCount = showAll8 ? 8 : 6;
+  while (displayGroups.length < displayCount) {
+    displayGroups.push({ displayNames: ['', '', ''], dotClasses: [0, 0, 0], raw: '', validNotes: [] });
+  }
+
+  let html = '<div class="measure-group">';
+  for (const g of displayGroups) {
+    html += '<div class="beat-block">';
+    for (let s = 0; s < 3; s++) {
+      const d = g.displayNames[s], dc = g.dotClasses[s];
+      const cls = d ? 'note-line' + (dc === 1 ? ' dots-1' : '') + (dc === 2 ? ' dots-2' : '') : 'note-line rest';
+      html += `<div class="${cls}">${d || '·'}</div>`;
+    }
+    html += '</div>';
+  }
+  return html + '</div>';
+}
+
+function renderPage(sheet, pageIdx) {
+  const totalMeasures = Math.ceil(sheet.groups.length / BEATS_PER_MEASURE);
+  const from = pageIdx * MEASURES_PER_PAGE;
+  const to = Math.min(from + MEASURES_PER_PAGE, totalMeasures);
+  let html = '';
+  for (let m = from; m < to; m += MEASURES_PER_ROW) {
+    html += '<div class="row">';
+    for (let k = m; k < Math.min(m + MEASURES_PER_ROW, to); k++) html += buildMeasure(sheet.groups, k);
+    html += '</div>';
+  }
+  return html;
+}
+
+/* ---------- MIDI 导出（最小 SMF format 0） ---------- */
+function toMidi(sheet) {
+  const DIV = 480;                              // ticks / 四分音符
+  const TICKS_PER_BEAT = DIV / 2;               // 一个时值 = 八分音符（与作者工具的 PPQ/2 一致）
+  const bpm = Math.max(1, parseInt(sheet.speed, 10) || 120);
+
+  /* 音高基准 —— 与本仓 src/Config.ts 的 NOTE_MAP_TO_MIDI 对齐：
+       索引 0 → MIDI 60 (C4)，索引 7 → 72 (C5)，索引 14 → 84 (C6)
+     app 的 pitch 字段是「相对 C 的半音移调」（getPitchChanger = 2^(N/12)），
+     所以 pitch=Ab 时索引 0 实际发声为 60 + 8 = 68。
+       索引 i 的 MIDI = 60 + 移调半音 + ⌊i/7⌋×12 + 大调音阶[i%7]              */
+  const semi = keyToSemitone(sheet.key);
+  const shift = APPLY_OCTAVE_MARK ? octaveShift(sheet.key) : 0;
+  const base = 60 + semi + shift;
+  const SCALE = [0, 2, 4, 5, 7, 9, 11];         // 大调音阶半音数
+  const pitch = idx => base + Math.floor(idx / 7) * 12 + SCALE[idx % 7];
+  console.info(`[MIDI] 调性 ${JSON.stringify(sheet.key)} → 移调 ${semi} 半音`
+    + `${shift ? `，八度记号 ${shift > 0 ? '+' : ''}${shift} 半音` : ''}`
+    + ` → 索引 0 = MIDI ${base}，索引 14 = MIDI ${pitch(14)}`);
+
+  // 收集事件（沿用与渲染一致的裁拍规则）
+  const events = [];                            // {tick, on, note}
+  const totalMeasures = Math.ceil(sheet.groups.length / BEATS_PER_MEASURE);
+  let tick = 0;
+  for (let m = 0; m < totalMeasures; m++) {
+    const meas = sheet.groups.slice(m * BEATS_PER_MEASURE, (m + 1) * BEATS_PER_MEASURE);
+    const last = meas[meas.length - 1];
+    const keep = (last && last.raw[3] === '<') ? meas.slice(0, 6) : meas;   // 同上，保守
+    for (const g of keep) {
+      for (const n of g.validNotes) {
+        const p = pitch(n.index);
+        if (p >= 0 && p <= 127) {
+          events.push({ tick, on: true, note: p });
+          events.push({ tick: tick + TICKS_PER_BEAT - 5, on: false, note: p });
+        }
+      }
+      tick += TICKS_PER_BEAT;
+    }
+  }
+  events.sort((a, b) => a.tick - b.tick || (a.on ? 1 : -1));
+
+  const bytes = [];
+  const push = (...b) => bytes.push(...b);
+  const vlq = v => { const s = [v & 0x7f]; v >>= 7; while (v) { s.unshift((v & 0x7f) | 0x80); v >>= 7; } return s; };
+  const str = s => [...s].map(c => c.charCodeAt(0));
+  const u32 = v => [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255];
+
+  const track = [];
+  // 曲名
+  const nameBytes = new TextEncoder().encode(sheet.name || 'Untitled');
+  track.push(0x00, 0xff, 0x03, ...vlq(nameBytes.length), ...nameBytes);
+  // 速度
+  const usPerBeat = Math.round(60000000 / bpm);
+  track.push(0x00, 0xff, 0x51, 0x03, (usPerBeat >> 16) & 255, (usPerBeat >> 8) & 255, usPerBeat & 255);
+  let prev = 0;
+  for (const e of events) {
+    track.push(...vlq(e.tick - prev), e.on ? 0x90 : 0x80, e.note, e.on ? 80 : 0);
+    prev = e.tick;
+  }
+  track.push(0x00, 0xff, 0x2f, 0x00);           // End of Track
+
+  push(...str('MThd'), ...u32(6), 0, 0, 0, 1, (DIV >> 8) & 255, DIV & 255);
+  push(...str('MTrk'), ...u32(track.length), ...track);
+  return new Uint8Array(bytes);
+}
+
+/* ---------- Sky Studio ABC txt 导出（照 reference/琴谱格式转换工具.html 的 convertToTxt） ---------- */
+const ABC_LABELS = ['A', 'B', 'C'].flatMap(r => [1, 2, 3, 4, 5].map(c => `${r}${c}`));
+const KEY_NUM = {C:0, Db:1, D:2, Eb:3, E:4, F:5, Gb:6, G:7, Ab:8, A:9, Bb:10, B:11};
+
+function toSkyStudioTxt(sheet) {
+  const tempo = Math.max(1, parseInt(sheet.speed, 10) || 120);
+  const keyName = (sheet.key || 'Ab').replace(/\(.*?\)/g, '').trim();
+  const keyNum = KEY_NUM[keyName] ?? 8;
+  const meterNum = parseInt((sheet.meter || '4/4').split('/')[0], 10) || 4;
+
+  // 逐小节按标记裁拍（与渲染/MIDI 用同一套保守规则）
+  const parts = [];
+  const total = Math.ceil(sheet.groups.length / BEATS_PER_MEASURE);
+  for (let m = 0; m < total; m++) {
+    const meas = sheet.groups.slice(m * BEATS_PER_MEASURE, (m + 1) * BEATS_PER_MEASURE);
+    const last = meas[meas.length - 1];
+    const keep = (last && last.raw[3] === '<') ? meas.slice(0, 6) : meas;
+    for (const g of keep) {
+      const idxs = [...new Set(g.validNotes.map(n => n.index))].sort((a, b) => a - b);
+      parts.push(idxs.length ? idxs.map(i => ABC_LABELS[i]).join('') : '.');
+    }
+  }
+  while (parts.length && parts[parts.length - 1] === '.') parts.pop();   // 舍去结尾休止
+
+  const line1 = `<DontCopyThisLine> ${tempo * 2} ${keyNum} ${meterNum * 4} Unknown Unknown`;
+  return line1 + '\n' + parts.join(' ') + ' \n';
+}
+
+/* ---------- 状态与交互 ---------- */
+const state = { sheets: [], active: -1, page: 0, bg: '', bright: 70, pos: 50 };
+const $ = id => document.getElementById(id);
+
+function download(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const safeName = s => (s || 'sheet').replace(/[/\\:*?"<>|]/g, '_');
+
+function paintBg() {
+  const el = $('bgimg');
+  // 没有背景图时两个滑块无意义，置灰提示
+  const noBg = !state.bg;
+  $('bright').disabled = noBg;
+  $('posY').disabled = noBg;
+  $('bright').closest('.slider-row').style.opacity = noBg ? .4 : 1;
+  $('posY').closest('.slider-row').style.opacity = noBg ? .4 : 1;
+  el.style.backgroundImage = state.bg ? `url("${state.bg}")` : 'none';
+  // 同一取值同时作用于横纵两轴：cover 下只有溢出的那一轴会响应。
+  // 横构图（如游戏截图）横向溢出→左右取景；竖构图→上下取景。
+  el.style.backgroundPosition = `${state.pos}% ${state.pos}%`;
+  el.style.filter = `brightness(${state.bright / 100})`;
+  $('page').style.background = state.bg ? '#000' : '#1b2030';
+}
+
+function draw() {
+  const s = state.sheets[state.active];
+  const has = !!s;
+  $('empty').hidden = has;
+  $('sheet').hidden = !has;
+  $('expOne').disabled = !has;
+  $('expAll').disabled = state.sheets.length === 0;
+  if (!has) { $('pageNo').textContent = '0 / 0'; return; }
+
+  const totalMeasures = Math.ceil(s.groups.length / BEATS_PER_MEASURE);
+  const pages = Math.max(1, Math.ceil(totalMeasures / MEASURES_PER_PAGE));
+  state.page = Math.min(state.page, pages - 1);
+
+  $('pTitle').textContent = `《${s.name}》`;
+  $('pTempo').textContent = `♩= ${s.speed}`;
+  $('pMeter').textContent = s.meter;
+  $('pKey').textContent = s.key;
+  $('pDiff').textContent = s.difficulty ? `${s.difficulty} ◆` : '';
+  $('pRows').innerHTML = renderPage(s, state.page);
+  $('pageNo').textContent = `${state.page + 1} / ${pages}`;
+  paintBg();
+}
+
+function drawFiles() {
+  $('files').innerHTML = state.sheets.map((s, i) =>
+    `<div class="file ${i === state.active ? 'on' : ''}" data-i="${i}">
+       <span class="nm">${s.name}</span><span class="rm" data-rm="${i}">✕</span>
+     </div>`).join('');
+}
+
+$('txtInput').addEventListener('change', async e => {
+  for (const f of e.target.files) {
+    try {
+      const sheet = parseSheet(await f.text(), f.name.replace(/\.txt$/i, ''));
+      state.sheets.push(sheet);
+    } catch (err) { alert(`${f.name}: ${err.message}`); }
+  }
+  if (state.active < 0 && state.sheets.length) state.active = 0;
+  e.target.value = '';
+  drawFiles(); draw();
+});
+
+$('files').addEventListener('click', e => {
+  const rm = e.target.dataset.rm;
+  if (rm !== undefined) {
+    state.sheets.splice(+rm, 1);
+    if (state.active >= state.sheets.length) state.active = state.sheets.length - 1;
+    state.page = 0; drawFiles(); draw(); return;
+  }
+  const box = e.target.closest('.file');
+  if (box) { state.active = +box.dataset.i; state.page = 0; drawFiles(); draw(); }
+});
+
+$('bgInput').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { state.bg = r.result; paintBg(); };
+  r.readAsDataURL(f);
+  e.target.value = '';
+});
+$('bgReset').onclick = () => { state.bg = ''; state.bright = 70; state.pos = 50; $('bright').value = 70; $('posY').value = 50; paintBg(); };
+$('clearAll').onclick = () => { state.sheets = []; state.active = -1; state.page = 0; drawFiles(); draw(); };
+$('bright').oninput = e => { state.bright = +e.target.value; paintBg(); };
+$('posY').oninput = e => { state.pos = +e.target.value; paintBg(); };
+$('prev').onclick = () => { if (state.page > 0) { state.page--; draw(); } };
+$('next').onclick = () => { state.page++; draw(); };
+
+const fmt = () => document.querySelector('input[name=fmt]:checked').value;
+function exportSheet(s) {
+  if (fmt() === 'mid') {
+    download(new Blob([toMidi(s)], { type: 'audio/midi' }), safeName(s.name) + '.mid');
+  } else if (fmt() === 'txt') {
+    download(new Blob([toSkyStudioTxt(s)], { type: 'text/plain' }), safeName(s.name) + '.txt');
+  } else {
+    window.print();                        // PDF 走浏览器打印，样式见 @media print
+  }
+}
+$('expOne').onclick = () => { const s = state.sheets[state.active]; if (s) exportSheet(s); };
+$('expAll').onclick = () => {
+  if (fmt() !== 'pdf') state.sheets.forEach((s, i) => setTimeout(() => exportSheet(s), i * 250));
+  else window.print();
+};
+
+drawFiles(); draw();
+</script>
+</body>
+</html>
