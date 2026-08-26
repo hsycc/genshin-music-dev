@@ -29,4 +29,5 @@ yarn-error.log*
 .yarn
 .next
 .idea
+.vscode
 build-stats.html
